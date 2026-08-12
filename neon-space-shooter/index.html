@@ -1,0 +1,2342 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Space Shooter - Final Edition</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Segoe UI', 'Courier New', monospace;
+            overflow: hidden;
+            color: #fff;
+        }
+        #game-container {
+            position: relative;
+            box-shadow: 0 0 60px rgba(0, 200, 255, 0.25), 0 0 120px rgba(0, 100, 255, 0.1);
+            border: 2px solid rgba(0, 255, 255, 0.4);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        canvas { display: block; background: #000011; }
+    </style>
+<base target="_blank">
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas" width="960" height="800"></canvas>
+    </div>
+    <script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// ============================================================
+// AUDIO MANAGER - Web Audio API Synthesizer
+// สร้างเสียงสังเคราะห์แบบ Procedural ไม่ต้องใช้ไฟล์เสียง
+// ============================================================
+class AudioManager {
+    constructor() {
+        this.ctx = null;
+        this.masterGain = null;
+        this.bgmOscs = [];
+        this.bgmInterval = null;
+        this.bgmNoteIndex = 0;
+        this.musicMode = 'normal';
+        this.isPlaying = false;
+        // สเกลเพลงแนว Cyberpunk
+        this.bgmNotes = [55, 58, 60, 61, 64, 65, 70, 73, 77, 82, 85];
+    }
+
+    init() {
+        if (!this.ctx) {
+            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+            this.masterGain = this.ctx.createGain();
+            this.masterGain.gain.value = 0.28;
+            this.masterGain.connect(this.ctx.destination);
+        }
+    }
+
+    // สร้างเสียงยิง (Laser)
+    playShoot() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const filter = this.ctx.createBiquadFilter();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(760, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(260, this.ctx.currentTime + 0.16);
+        filter.type = 'lowpass';
+        filter.frequency.value = 1400;
+        filter.Q.value = 1.2;
+        gain.gain.setValueAtTime(0.14, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.16);
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.masterGain);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.16);
+    }
+
+    // สร้างเสียงระเบิด (Explosion)
+    playExplosion(size = 1) {
+        if (!this.ctx) return;
+        const bufferSize = this.ctx.sampleRate * 0.3;
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 2);
+        }
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 800 * size;
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(0.25 * size, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.3);
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.masterGain);
+        noise.start();
+    }
+
+    // เสียงชน / โดนยิง
+    playHit() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const filter = this.ctx.createBiquadFilter();
+        const gain = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(220, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(70, this.ctx.currentTime + 0.14);
+        filter.type = 'lowpass';
+        filter.frequency.value = 900;
+        filter.Q.value = 1;
+        gain.gain.setValueAtTime(0.18, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.14);
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.masterGain);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.14);
+    }
+
+    playPickup() {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        const filter = this.ctx.createBiquadFilter();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(440, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(660, this.ctx.currentTime + 0.08);
+        filter.type = 'bandpass';
+        filter.frequency.value = 900;
+        filter.Q.value = 1.4;
+        gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.16);
+        osc.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.masterGain);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.16);
+    }
+
+    // เสียงเลเวลอัพ
+    playLevelUp() {
+        if (!this.ctx) return;
+        const notes = [523, 659, 784, 1047];
+        notes.forEach((freq, i) => {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0, this.ctx.currentTime + i * 0.1);
+            gain.gain.linearRampToValueAtTime(0.18, this.ctx.currentTime + i * 0.1 + 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.1 + 0.35);
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start(this.ctx.currentTime + i * 0.1);
+            osc.stop(this.ctx.currentTime + i * 0.1 + 0.35);
+        });
+    }
+
+    // เสียงบอสปรากฏตัว
+    playBossAlert() {
+        if (!this.ctx) return;
+        for (let i = 0; i < 3; i++) {
+            const osc = this.ctx.createOscillator();
+            const filter = this.ctx.createBiquadFilter();
+            const gain = this.ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(140, this.ctx.currentTime + i * 0.4);
+            osc.frequency.linearRampToValueAtTime(70, this.ctx.currentTime + i * 0.4 + 0.3);
+            filter.type = 'lowpass';
+            filter.frequency.value = 700;
+            filter.Q.value = 1.3;
+            gain.gain.setValueAtTime(0.24, this.ctx.currentTime + i * 0.4);
+            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.4 + 0.5);
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start(this.ctx.currentTime + i * 0.4);
+            osc.stop(this.ctx.currentTime + i * 0.4 + 0.5);
+        }
+    }
+
+    // เสียงชนะเกม
+    playWin() {
+        if (!this.ctx) return;
+        const scale = [523, 587, 659, 784, 880, 1047, 1175, 1319];
+        scale.forEach((freq, i) => {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0, this.ctx.currentTime + i * 0.12);
+            gain.gain.linearRampToValueAtTime(0.16, this.ctx.currentTime + i * 0.12 + 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i * 0.12 + 0.45);
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start(this.ctx.currentTime + i * 0.12);
+            osc.stop(this.ctx.currentTime + i * 0.12 + 0.45);
+        });
+    }
+
+    // BGM - Cyberpunk และบอสเธม
+    startBGM(mode = 'normal') {
+        if (!this.ctx) return;
+        if (this.isPlaying && this.musicMode === mode) return;
+        this._stopBGM();
+        this.musicMode = mode;
+        this.isPlaying = true;
+        this.bgmNoteIndex = 0;
+
+        const settings = {
+            menu: { bassType: 'triangle', bassFreq: 28, bassGain: 0.045, bassFilter: 140, padFreq: 48, padGain: 0.018, leadType: 'triangle', leadFreq: 100, leadGain: 0.03, leadFilter: 880, interval: 170, noteSet: [55, 58, 60, 61, 64, 68, 72] },
+            normal: { bassType: 'triangle', bassFreq: 32.5, bassGain: 0.06, bassFilter: 120, padFreq: 52, padGain: 0.02, leadType: 'triangle', leadFreq: 130, leadGain: 0.048, leadFilter: 900, interval: 140, noteSet: [55, 58, 60, 61, 64, 65, 70, 73] },
+            boss1: { bassType: 'sawtooth', bassFreq: 28, bassGain: 0.075, bassFilter: 110, padFreq: 40, padGain: 0.025, leadType: 'square', leadFreq: 110, leadGain: 0.055, leadFilter: 760, interval: 115, noteSet: [48, 50, 53, 55, 58, 60] },
+            boss2: { bassType: 'sawtooth', bassFreq: 24, bassGain: 0.085, bassFilter: 100, padFreq: 34, padGain: 0.028, leadType: 'sawtooth', leadFreq: 95, leadGain: 0.06, leadFilter: 700, interval: 95, noteSet: [42, 45, 47, 50, 53, 57] },
+            final: { bassType: 'sawtooth', bassFreq: 20, bassGain: 0.095, bassFilter: 90, padFreq: 28, padGain: 0.03, leadType: 'triangle', leadFreq: 80, leadGain: 0.065, leadFilter: 620, interval: 180, noteSet: [33, 36, 38, 41, 44, 47, 50] }
+        };
+
+        const cfg = settings[mode] || settings.normal;
+        const bassOsc = this.ctx.createOscillator();
+        const bassGain = this.ctx.createGain();
+        const bassFilter = this.ctx.createBiquadFilter();
+        bassOsc.type = cfg.bassType;
+        bassOsc.frequency.value = cfg.bassFreq;
+        bassFilter.type = 'lowpass';
+        bassFilter.frequency.value = cfg.bassFilter;
+        bassFilter.Q.value = 0.75;
+        bassGain.gain.value = cfg.bassGain * 0.6;
+        bassOsc.connect(bassFilter);
+        bassFilter.connect(bassGain);
+        bassGain.connect(this.masterGain);
+        bassOsc.start();
+
+        const padOsc = this.ctx.createOscillator();
+        const padGain = this.ctx.createGain();
+        const padFilter = this.ctx.createBiquadFilter();
+        padOsc.type = 'triangle';
+        padOsc.frequency.value = cfg.padFreq || cfg.bassFreq * 1.8;
+        padFilter.type = 'lowpass';
+        padFilter.frequency.value = 180;
+        padFilter.Q.value = 0.55;
+        padOsc.connect(padFilter);
+        padFilter.connect(padGain);
+        padGain.gain.value = cfg.padGain || 0.009;
+        padGain.connect(this.masterGain);
+        padOsc.start();
+
+        const leadOsc = this.ctx.createOscillator();
+        const leadGain = this.ctx.createGain();
+        const leadFilter = this.ctx.createBiquadFilter();
+        leadOsc.type = 'triangle';
+        leadOsc.frequency.value = cfg.leadFreq;
+        leadFilter.type = 'lowpass';
+        leadFilter.frequency.value = cfg.leadFilter;
+        leadFilter.Q.value = 0.7;
+        leadOsc.connect(leadFilter);
+        leadFilter.connect(leadGain);
+        leadGain.gain.value = cfg.leadGain * 0.35;
+        leadGain.connect(this.masterGain);
+        leadOsc.start();
+
+        this.bgmOscs = [bassOsc, padOsc, leadOsc];
+
+        const playMelodyNote = () => {
+            const note = cfg.noteSet[this.bgmNoteIndex % cfg.noteSet.length];
+            const osc = this.ctx.createOscillator();
+            const filter = this.ctx.createBiquadFilter();
+            const gain = this.ctx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(note, this.ctx.currentTime);
+            filter.type = 'lowpass';
+            filter.frequency.value = note * 1.8;
+            filter.Q.value = 0.55;
+            gain.gain.setValueAtTime(0.032, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 1.0);
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start();
+            osc.stop(this.ctx.currentTime + 1.0);
+            this.bgmNoteIndex++;
+        };
+
+        playMelodyNote();
+        this.bgmInterval = setInterval(playMelodyNote, cfg.interval * 3);
+    }
+
+    changeMusic(mode) {
+        if (mode === this.musicMode) return;
+        this.startBGM(mode);
+    }
+
+    _stopBGM() {
+        if (this.bgmOscs.length) {
+            this.bgmOscs.forEach(osc => { try { osc.stop(); } catch (e) {} });
+            this.bgmOscs = [];
+        }
+        if (this.bgmInterval) { clearInterval(this.bgmInterval); this.bgmInterval = null; }
+        this.isPlaying = false;
+    }
+
+    stopBGM() {
+        this._stopBGM();
+    }
+}
+
+// ============================================
+// Vector2
+// ============================================
+class Vector2 {
+    constructor(x = 0, y = 0) { this.x = x; this.y = y; }
+    add(v) { return new Vector2(this.x + v.x, this.y + v.y); }
+    sub(v) { return new Vector2(this.x - v.x, this.y - v.y); }
+    mult(n) { return new Vector2(this.x * n, this.y * n); }
+    mag() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+    normalize() { const m = this.mag(); return m === 0 ? new Vector2(0, 0) : new Vector2(this.x / m, this.y / m); }
+}
+
+// ============================================
+// Particle System (อัพเกรดมี Shockwave)
+// ============================================
+class Particle {
+    constructor(x, y, color, speed, life, size = null, type = 'normal') {
+        this.x = x; this.y = y;
+        const angle = Math.random() * Math.PI * 2;
+        const velocity = Math.random() * speed;
+        this.vx = Math.cos(angle) * velocity;
+        this.vy = Math.sin(angle) * velocity;
+        this.color = color;
+        this.life = life;
+        this.maxLife = life;
+        this.size = size || Math.random() * 3 + 1;
+        this.decay = Math.random() * 0.05 + 0.92;
+        this.type = type;
+        this.rotation = Math.random() * Math.PI * 2;
+        this.rotSpeed = (Math.random() - 0.5) * 0.2;
+    }
+    update() {
+        this.x += this.vx; this.y += this.vy;
+        this.vx *= 0.96; this.vy *= 0.96;
+        this.life--;
+        this.size *= this.decay;
+        this.rotation += this.rotSpeed;
+    }
+    draw(ctx) {
+        const alpha = Math.max(0, this.life / this.maxLife);
+        ctx.globalAlpha = alpha;
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.rotation);
+        if (this.type === 'shock') {
+            ctx.strokeStyle = this.color;
+            ctx.lineWidth = 2;
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = this.color;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.size * 5, 0, Math.PI * 2);
+            ctx.stroke();
+        } else if (this.type === 'spark') {
+            ctx.fillStyle = this.color;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = this.color;
+            ctx.fillRect(-this.size / 2, -this.size * 3, this.size, this.size * 6);
+        } else {
+            ctx.fillStyle = this.color;
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = this.color;
+            ctx.beginPath();
+            ctx.arc(0, 0, Math.max(0.1, this.size), 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+        ctx.globalAlpha = 1;
+    }
+    get isDead() { return this.life <= 0 || this.size < 0.1; }
+}
+
+// ============================================
+// Starfield (Parallax + Nebula texture)
+// ============================================
+class Star {
+    constructor(canvasWidth, canvasHeight, speedMultiplier = 1, isNebula = false) {
+        this.canvasWidth = canvasWidth;
+        this.x = Math.random() * canvasWidth;
+        this.y = Math.random() * canvasHeight;
+        this.isNebula = isNebula;
+        if (isNebula) {
+            this.size = Math.random() * 80 + 40;
+            this.speed = 0.1;
+            this.color = `hsla(${Math.random() * 60 + 180}, 70%, 30%, ${Math.random() * 0.08 + 0.02})`;
+        } else {
+            this.size = Math.random() * 2.5 + 0.3;
+            this.speed = this.size * 0.6 * speedMultiplier;
+            this.brightness = Math.random() * 0.5 + 0.3;
+            this.twinkleSpeed = Math.random() * 0.05 + 0.01;
+            this.twinkleOffset = Math.random() * Math.PI * 2;
+        }
+    }
+    update(canvasHeight) {
+        this.y += this.speed;
+        if (this.y > canvasHeight + 100) {
+            this.y = -100;
+            this.x = Math.random() * this.canvasWidth;
+        }
+    }
+    draw(ctx, time) {
+        if (this.isNebula) {
+            const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.size);
+            grad.addColorStop(0, this.color);
+            grad.addColorStop(1, 'transparent');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            const twinkle = Math.sin(time * this.twinkleSpeed + this.twinkleOffset);
+            const alpha = this.brightness + twinkle * 0.15;
+            ctx.fillStyle = `rgba(255, 255, 255, ${Math.max(0.1, alpha)})`;
+            ctx.shadowBlur = this.size > 1.5 ? 6 : 0;
+            ctx.shadowColor = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+    }
+}
+
+// ============================================
+// Bullet (อัพเกรดมี trail)
+// ============================================
+class Bullet {
+    constructor(x, y, vy, color, options = {}) {
+        this.x = x; this.y = y;
+        this.vx = options.vx || 0;
+        this.vy = vy;
+        this.color = color;
+        this.isEnemy = options.isEnemy || false;
+        this.width = this.isEnemy ? 6 : 4;
+        this.height = this.isEnemy ? 12 : 16;
+        this.active = true;
+        this.damage = options.damage || 1;
+        this.pierceLeft = options.pierce || 0;
+        this.alreadyHit = new Set();
+        this.trail = [];
+    }
+    update() {
+        this.trail.push({ x: this.x, y: this.y, life: 8 });
+        if (this.trail.length > 8) this.trail.shift();
+        this.trail.forEach(t => t.life--);
+        this.trail = this.trail.filter(t => t.life > 0);
+        this.x += this.vx;
+        this.y += this.vy;
+        if (this.y < -40 || this.y > canvas.height + 40 || this.x < -40 || this.x > canvas.width + 40) this.active = false;
+    }
+    draw(ctx) {
+        // Trail
+        this.trail.forEach((t, i) => {
+            const alpha = (t.life / 8) * 0.4;
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.arc(t.x, t.y, this.width * 0.6 * (i / 8 + 0.3), 0, Math.PI * 2);
+            ctx.fill();
+        });
+        ctx.globalAlpha = 1;
+        ctx.save();
+        ctx.fillStyle = this.color;
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = this.color;
+        if (Math.abs(this.vx) > 0.1) {
+            ctx.translate(this.x, this.y);
+            ctx.rotate(Math.atan2(this.vy, this.vx) + Math.PI / 2);
+            ctx.fillRect(-this.width / 2, -this.height / 2, this.width, this.height);
+        } else {
+            ctx.fillRect(this.x - this.width / 2, this.y, this.width, this.height);
+        }
+        ctx.restore();
+    }
+    getBounds() {
+        return { x: this.x - this.width / 2, y: this.y, w: this.width, h: this.height };
+    }
+}
+
+// ============================================
+// Enemy - เพิ่มประเภท: drone, bomber, elite, scout, interceptor, destroyer
+// ============================================
+class Enemy {
+    constructor(x, y, type, id, minuteLevel = 0) {
+        this.id = id;
+        this.x = x; this.y = y;
+        this.type = type;
+        this.active = true;
+        this.vx = 0; this.vy = 0;
+        this.angle = 0;
+        this.shootTimer = 0;
+        this.phase = 0;
+        switch (type) {
+            case 'scout':
+                this.hp = 1; this.maxHp = 1; this.speed = 3.5;
+                this.color = '#ffdd00'; this.score = 100; this.xpValue = 15;
+                this.width = 28; this.height = 28;
+                break;
+            case 'interceptor':
+                this.hp = 3; this.maxHp = 3; this.speed = 2;
+                this.color = '#ff3366'; this.score = 250; this.xpValue = 35;
+                this.width = 36; this.height = 36;
+                break;
+            case 'destroyer':
+                this.hp = 16; this.maxHp = 16; this.speed = 0.65;
+                this.color = '#cc33ff'; this.score = 700; this.xpValue = 95;
+                this.width = 56; this.height = 56;
+                break;
+            case 'drone':
+                this.hp = 2; this.maxHp = 2; this.speed = 2.5;
+                this.color = '#00ffaa'; this.score = 180; this.xpValue = 25;
+                this.width = 24; this.height = 24;
+                this.orbitAngle = Math.random() * Math.PI * 2;
+                this.orbitCenterX = x;
+                break;
+            case 'striker':
+                this.hp = 4; this.maxHp = 4; this.speed = 3.6;
+                this.color = '#66ccff'; this.score = 220; this.xpValue = 30;
+                this.width = 30; this.height = 30;
+                this.shootInterval = 90;
+                break;
+            case 'bomber':
+                this.hp = 22; this.maxHp = 22; this.speed = 0.5;
+                this.color = '#ff6600'; this.score = 420; this.xpValue = 65;
+                this.width = 48; this.height = 48;
+                break;
+            case 'warden':
+                this.hp = 24; this.maxHp = 24; this.speed = 0.9;
+                this.color = '#ff2299'; this.score = 900; this.xpValue = 120;
+                this.width = 62; this.height = 62;
+                this.shootInterval = 120;
+                break;
+            case 'elite':
+                this.hp = 5; this.maxHp = 5; this.speed = 3;
+                this.color = '#ff0066'; this.score = 350; this.xpValue = 50;
+                this.width = 32; this.height = 32;
+                this.shootInterval = 80;
+                break;
+        }
+        const scale = 1 + Math.min(minuteLevel * 0.06, 0.4);
+        this.hp = Math.max(1, Math.ceil(this.hp * scale));
+        this.maxHp = this.hp;
+        this.score = Math.ceil(this.score * (1 + minuteLevel * 0.07));
+        this.xpValue = Math.ceil(this.xpValue * (1 + minuteLevel * 0.05));
+    }
+
+    update(playerX, playerY, time) {
+        this.angle += 0.03;
+        if (this.type === 'scout') {
+            this.y += this.speed;
+            const dir = playerX - this.x;
+            this.vx += (dir > 0 ? 0.06 : -0.06);
+            this.vx = Math.max(-3.5, Math.min(3.5, this.vx));
+            this.x += this.vx;
+        } else if (this.type === 'interceptor') {
+            this.y += this.speed;
+            this.x += Math.sin(time * 0.03 + this.y * 0.01) * 2.5;
+        } else if (this.type === 'destroyer') {
+            this.y += this.speed;
+            this.x += Math.sin(time * 0.015) * 1.5;
+        } else if (this.type === 'drone') {
+            this.orbitAngle += 0.04;
+            this.y += this.speed * 0.6;
+            this.x = this.orbitCenterX + Math.sin(this.orbitAngle) * 60;
+        } else if (this.type === 'bomber') {
+            this.y += this.speed;
+            this.x += Math.sin(time * 0.008) * 0.8;
+        } else if (this.type === 'striker') {
+            this.y += this.speed;
+            const dx = playerX - this.x;
+            this.x += Math.sign(dx) * Math.min(3.2, Math.abs(dx) * 0.02);
+            this.shootTimer++;
+        } else if (this.type === 'warden') {
+            this.y += this.speed;
+            this.x += Math.sin(time * 0.012) * 1.2;
+            this.shootTimer++;
+        } else if (this.type === 'elite') {
+            this.y += this.speed;
+            const dx = playerX - this.x;
+            const dy = playerY - this.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > 0) {
+                this.x += (dx / dist) * 1.2;
+                this.y += (dy / dist) * 0.8;
+            }
+            this.shootTimer++;
+        }
+        if (this.y > canvas.height + 80) this.active = false;
+    }
+
+    draw(ctx) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.fillStyle = this.color;
+        ctx.shadowBlur = 18;
+        ctx.shadowColor = this.color;
+
+        if (this.type === 'scout') {
+            ctx.beginPath();
+            ctx.moveTo(0, this.height / 2);
+            ctx.lineTo(-this.width / 2, -this.height / 2);
+            ctx.lineTo(this.width / 2, -this.height / 2);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            ctx.beginPath();
+            ctx.moveTo(0, -this.height / 3);
+            ctx.lineTo(-this.width / 6, this.height / 8);
+            ctx.lineTo(this.width / 6, this.height / 8);
+            ctx.closePath(); ctx.fill();
+        } else if (this.type === 'interceptor') {
+            ctx.rotate(this.angle * 0.5);
+            ctx.beginPath();
+            ctx.moveTo(0, -this.height / 2);
+            ctx.lineTo(this.width / 2, 0);
+            ctx.lineTo(0, this.height / 2);
+            ctx.lineTo(-this.width / 2, 0);
+            ctx.closePath(); ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 2; ctx.stroke();
+            ctx.fillStyle = 'rgba(255,255,255,0.12)';
+            ctx.fillRect(-this.width / 6, -this.height / 4, this.width / 3, this.height / 2);
+        } else if (this.type === 'destroyer') {
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) {
+                const a = (Math.PI / 3) * i - Math.PI / 2;
+                const r = this.width / 2;
+                const px = Math.cos(a) * r;
+                const py = Math.sin(a) * r;
+                if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.closePath(); ctx.fill();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(0, 0, 22, 0, Math.PI * 2); ctx.stroke();
+        } else if (this.type === 'drone') {
+            ctx.rotate(this.angle);
+            ctx.beginPath();
+            ctx.arc(0, 0, this.width / 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#00ffaa'; ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(-this.width, 0); ctx.lineTo(this.width, 0);
+            ctx.moveTo(0, -this.width); ctx.lineTo(0, this.width);
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(0, 0, this.width / 2 - 4, 0, Math.PI * 2); ctx.stroke();
+        } else if (this.type === 'bomber') {
+            ctx.fillStyle = '#ff4400';
+            ctx.beginPath();
+            ctx.moveTo(0, -this.height / 2);
+            ctx.lineTo(this.width / 2, 0);
+            ctx.lineTo(this.width / 3, this.height / 2);
+            ctx.lineTo(-this.width / 3, this.height / 2);
+            ctx.lineTo(-this.width / 2, 0);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = '#ff8800';
+            ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.16)';
+            ctx.beginPath(); ctx.moveTo(-this.width / 5, 0); ctx.lineTo(this.width / 5, 0); ctx.lineTo(this.width / 5, this.height / 6); ctx.lineTo(-this.width / 5, this.height / 6); ctx.closePath(); ctx.fill();
+        } else if (this.type === 'striker') {
+            ctx.rotate(this.angle * 0.9);
+            ctx.fillStyle = '#66ccff';
+            ctx.beginPath();
+            ctx.moveTo(0, -this.height / 2);
+            ctx.lineTo(this.width / 2, 0);
+            ctx.lineTo(0, this.height / 2);
+            ctx.lineTo(-this.width / 2, 0);
+            ctx.closePath(); ctx.fill();
+            ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            ctx.fillRect(-3, -this.height / 4, 6, this.height / 2);
+        } else if (this.type === 'warden') {
+            ctx.fillStyle = '#aa33ff';
+            ctx.fillRect(-this.width / 2, -this.height / 2, this.width, this.height);
+            ctx.strokeStyle = '#ff99ff'; ctx.lineWidth = 2;
+            ctx.strokeRect(-this.width / 2, -this.height / 2, this.width, this.height);
+            ctx.fillStyle = '#ffccff';
+            ctx.beginPath(); ctx.arc(0, -8, 10, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.18)';
+            ctx.fillRect(-this.width / 4, 6, this.width / 2, 6);
+        } else if (this.type === 'elite') {
+            ctx.rotate(this.angle * 0.8);
+            ctx.beginPath();
+            ctx.moveTo(0, -this.height / 2);
+            ctx.lineTo(this.width / 2, -this.height / 4);
+            ctx.lineTo(this.width / 2, this.height / 4);
+            ctx.lineTo(0, this.height / 2);
+            ctx.lineTo(-this.width / 2, this.height / 4);
+            ctx.lineTo(-this.width / 2, -this.height / 4);
+            ctx.closePath(); ctx.fill();
+            ctx.strokeStyle = '#ff99aa'; ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.fillStyle = 'rgba(255,255,255,0.18)';
+            ctx.beginPath(); ctx.moveTo(-this.width / 4, -this.height / 6); ctx.lineTo(this.width / 4, -this.height / 6); ctx.lineTo(this.width / 6, this.height / 6); ctx.lineTo(-this.width / 6, this.height / 6); ctx.closePath(); ctx.fill();
+        }
+        ctx.restore();
+    }
+
+    getBounds() {
+        return { x: this.x - this.width / 2, y: this.y - this.height / 2, w: this.width, h: this.height };
+    }
+
+    takeDamage(damage) {
+        this.hp -= damage;
+        if (this.hp <= 0) { this.active = false; return true; }
+        return false;
+    }
+
+    canShoot() {
+        return (this.type === 'elite' || this.type === 'striker' || this.type === 'warden') && this.shootTimer >= this.shootInterval;
+    }
+
+    resetShoot() {
+        this.shootTimer = 0;
+    }
+}
+
+// ============================================
+// ITEM DROP SYSTEM
+// ============================================
+class Item {
+    constructor(x, y, type) {
+        this.x = x;
+        this.y = y;
+        this.type = type;
+        this.active = true;
+        this.size = 24;
+        this.vy = 1.4;
+        this.timer = 0;
+        if (type === 'heal') {
+            this.color = '#00ff88';
+            this.icon = '❤️';
+            this.label = 'Heal';
+        } else if (type === 'shield') {
+            this.color = '#33ccff';
+            this.icon = '🛡️';
+            this.label = 'Shield';
+        } else {
+            this.color = '#ffdd55';
+            this.icon = '✨';
+            this.label = 'Invul';
+        }
+    }
+
+    update() {
+        this.y += this.vy;
+        this.timer += 1;
+        if (this.timer % 20 < 10) this.x += Math.sin(this.timer * 0.3) * 0.7;
+        if (this.y > canvas.height + 30) this.active = false;
+    }
+
+    draw(ctx) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.shadowBlur = 16;
+        ctx.shadowColor = this.color;
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(0, 0, this.size / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 18px "Segoe UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(this.icon, 0, 6);
+        ctx.restore();
+    }
+
+    getBounds() {
+        return { x: this.x - this.size / 2, y: this.y - this.size / 2, w: this.size, h: this.size };
+    }
+}
+
+// ============================================
+// BOSS CLASS - ยักษ์ใหญ่ 3 ด่าน
+// ============================================
+class Boss {
+    constructor(tier, gameWidth) {
+        this.tier = tier; // 1, 2, 3
+        this.active = true;
+        this.x = gameWidth / 2;
+        this.y = -150;
+        this.targetY = 120;
+        this.phase = 'enter'; // enter, idle, attack, dead
+        this.phaseTimer = 0;
+        this.angle = 0;
+        this.id = 'boss_' + tier;
+        this.shootTimer = 0;
+        this.moveDir = 1;
+
+        switch (tier) {
+            case 1:
+                this.maxHp = 200; this.hp = 200;
+                this.width = 100; this.height = 100;
+                this.color = '#ff4444';
+                this.speed = 1.5;
+                this.score = 5000;
+                this.xpValue = 500;
+                break;
+            case 2:
+                this.maxHp = 500; this.hp = 500;
+                this.width = 140; this.height = 140;
+                this.color = '#ff00ff';
+                this.speed = 1.2;
+                this.score = 12000;
+                this.xpValue = 1200;
+                break;
+            case 3:
+                this.maxHp = 1200; this.hp = 1200;
+                this.width = 200; this.height = 200;
+                this.color = '#ff0000';
+                this.speed = 0.9;
+                this.score = 30000;
+                this.xpValue = 3000;
+                break;
+        }
+    }
+
+    update(playerX, playerY, time) {
+        this.angle += 0.02;
+        this.phaseTimer++;
+
+        if (this.phase === 'enter') {
+            this.y += 2;
+            if (this.y >= this.targetY) {
+                this.phase = 'idle';
+                this.phaseTimer = 0;
+            }
+            return;
+        }
+
+        if (this.phase === 'dead') {
+            this.y += 1;
+            this.angle += 0.1;
+            return;
+        }
+
+        // บอสเคลื่อนไหวแบบ Pattern
+        this.x += this.speed * this.moveDir;
+        if (this.x < this.width) { this.x = this.width; this.moveDir = 1; }
+        if (this.x > canvas.width - this.width) { this.x = canvas.width - this.width; this.moveDir = -1; }
+
+        // โจมตีตามรอบ
+        this.shootTimer++;
+
+        // บอสระดับ 3 มีพฤติกรรมซับซ้อน
+        if (this.tier === 3) {
+            this.y = this.targetY + Math.sin(time * 0.002) * 30;
+        }
+    }
+
+    draw(ctx) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.angle * 0.3);
+
+        // Glow รอบตัวบอส
+        ctx.shadowBlur = 40;
+        ctx.shadowColor = this.color;
+
+        if (this.tier === 1) {
+            // บอสด่าน 1: ยานรบขนาดกลาง ทรงเพชร
+            ctx.fillStyle = '#220000';
+            ctx.strokeStyle = this.color;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(0, -this.height / 2);
+            ctx.lineTo(this.width / 2, 0);
+            ctx.lineTo(0, this.height / 2);
+            ctx.lineTo(-this.width / 2, 0);
+            ctx.closePath();
+            ctx.fill(); ctx.stroke();
+            // ตาบอส
+            ctx.fillStyle = '#ff0000';
+            ctx.beginPath(); ctx.arc(0, 0, 18, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#ffaaaa';
+            ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
+            // ปีก
+            ctx.strokeStyle = '#ff6666'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(-this.width / 2, 0); ctx.lineTo(-this.width * 0.8, -20); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(this.width / 2, 0); ctx.lineTo(this.width * 0.8, -20); ctx.stroke();
+        } else if (this.tier === 2) {
+            // บอสด่าน 2: ยานทรงแมลงปีกกว้าง
+            ctx.fillStyle = '#1a001a';
+            ctx.strokeStyle = this.color;
+            ctx.lineWidth = 3;
+            // ลำตัว
+            ctx.beginPath();
+            ctx.ellipse(0, 0, this.width / 3, this.height / 2, 0, 0, Math.PI * 2);
+            ctx.fill(); ctx.stroke();
+            // ปีกซ้าย
+            ctx.beginPath();
+            ctx.moveTo(-this.width / 4, -10);
+            ctx.quadraticCurveTo(-this.width * 0.7, -this.height * 0.6, -this.width / 3, this.height / 3);
+            ctx.quadraticCurveTo(-this.width / 4, 0, -this.width / 4, -10);
+            ctx.fill(); ctx.stroke();
+            // ปีกขวา
+            ctx.beginPath();
+            ctx.moveTo(this.width / 4, -10);
+            ctx.quadraticCurveTo(this.width * 0.7, -this.height * 0.6, this.width / 3, this.height / 3);
+            ctx.quadraticCurveTo(this.width / 4, 0, this.width / 4, -10);
+            ctx.fill(); ctx.stroke();
+            // ตา
+            ctx.fillStyle = '#ff00ff';
+            ctx.beginPath(); ctx.arc(-15, -20, 12, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(15, -20, 12, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.beginPath(); ctx.arc(-15, -20, 5, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(15, -20, 5, 0, Math.PI * 2); ctx.fill();
+        } else if (this.tier === 3) {
+            // บอสด่าน 3: ยักษ์ใหญ่อลังการ - ป้อมปราการบินได้
+            ctx.fillStyle = '#1a0000';
+            ctx.strokeStyle = this.color;
+            ctx.lineWidth = 4;
+            // ฐานหลัก (octagon)
+            ctx.beginPath();
+            for (let i = 0; i < 8; i++) {
+                const a = (Math.PI / 4) * i - Math.PI / 2;
+                const r = this.width / 2.2;
+                const px = Math.cos(a) * r;
+                const py = Math.sin(a) * r;
+                if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.closePath(); ctx.fill(); ctx.stroke();
+            // วงใน
+            ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(0, 0, this.width / 3.5, 0, Math.PI * 2); ctx.stroke();
+            // ตากลางยักษ์
+            ctx.fillStyle = '#ff0000';
+            ctx.shadowBlur = 30; ctx.shadowColor = '#ff0000';
+            ctx.beginPath(); ctx.arc(0, -10, 28, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#ffff00';
+            ctx.beginPath(); ctx.arc(0, -10, 14, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#000';
+            ctx.beginPath(); ctx.arc(0, -10, 6, 0, Math.PI * 2); ctx.fill();
+            // ป้อมปืน 4 มุม
+            ctx.shadowBlur = 20; ctx.shadowColor = '#ff6600';
+            ctx.fillStyle = '#ff4400';
+            const turretPos = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+            turretPos.forEach(([sx, sy]) => {
+                ctx.beginPath();
+                ctx.arc(sx * this.width / 3, sy * this.height / 3, 18, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            // แหวนรอบนอกหมุน
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.4)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            const ringR = this.width / 2 + 15;
+            for (let i = 0; i < 12; i++) {
+                const a = (Math.PI / 6) * i + this.angle;
+                const px = Math.cos(a) * ringR;
+                const py = Math.sin(a) * ringR;
+                if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.closePath(); ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+
+    getBounds() {
+        return { x: this.x - this.width / 2, y: this.y - this.height / 2, w: this.width, h: this.height };
+    }
+
+    takeDamage(damage) {
+        this.hp -= damage;
+        if (this.hp <= 0) {
+            this.hp = 0;
+            this.phase = 'dead';
+            this.active = false;
+            return true;
+        }
+        return false;
+    }
+
+    getBossBullets() {
+        const bullets = [];
+        const patterns = [
+            // Pattern 0: ยิงตรง 3 นัด
+            [{ vx: 0, vy: 6 }],
+            // Pattern 1: กระจาย 5 นัด
+            [{ vx: -3, vy: 5 }, { vx: -1.5, vy: 6 }, { vx: 0, vy: 7 }, { vx: 1.5, vy: 6 }, { vx: 3, vy: 5 }],
+            // Pattern 2: วงกลม 8 ทิศ
+            Array.from({ length: 8 }, (_, i) => {
+                const a = (Math.PI / 4) * i;
+                return { vx: Math.cos(a) * 5, vy: Math.sin(a) * 5 };
+            })
+        ];
+
+        let patternIdx = 0;
+        if (this.tier === 2) patternIdx = this.shootTimer % 200 < 100 ? 1 : 0;
+        if (this.tier === 3) {
+            if (this.shootTimer % 300 < 100) patternIdx = 2;
+            else if (this.shootTimer % 300 < 200) patternIdx = 1;
+            else patternIdx = 0;
+        }
+
+        const pattern = patterns[patternIdx];
+        pattern.forEach(p => {
+            bullets.push(new Bullet(this.x, this.y + this.height / 3, p.vy, '#ff3333', {
+                vx: p.vx, isEnemy: true, damage: this.tier
+            }));
+        });
+
+        return bullets;
+    }
+}
+
+// ============================================
+// PLAYER - โมเดลใหม่สวยงามอลังการ
+// ============================================
+class Player {
+    constructor(x, y) {
+        this.x = x; this.y = y;
+        this.width = 50; this.height = 60;
+        this.defaultSpeed = 4.4;
+        this.baseSpeed = this.defaultSpeed;
+        this.speed = this.baseSpeed; // ลดความเร็วลงเพื่อเพิ่มความท้าทาย
+        this.hp = 120; this.maxHp = 120;
+        this.color = '#00e5ff';
+        this.shootCooldown = 0; this.shootDelay = 10;
+        this.engineTimer = 0; this.invulnerable = 0;
+        this.level = 1; this.xp = 0; this.xpToNext = 120;
+        this.powers = new Map();
+        this.shotCount = 1; this.pierceCount = 0;
+        this.shield = 0; this.shieldMax = 0;
+        this.bulletDamage = 1; this.bulletSpeed = 12; this.armor = 0; this.regenRate = 0; this.regenTimer = 0;
+        this.wingAngle = 0;
+    }
+
+    gainXp(amount) {
+        this.xp += amount;
+        if (this.xp >= this.xpToNext) {
+            this.xp -= this.xpToNext;
+            this.level++;
+            this.xpToNext = Math.floor(this.xpToNext * 1.75);
+            return true;
+        }
+        return false;
+    }
+
+    recalcStats() {
+        this.shootDelay = 10; this.shotCount = 1; this.pierceCount = 0;
+        this.shieldMax = 0; this.baseSpeed = this.defaultSpeed; this.bulletDamage = 1; this.bulletSpeed = 12; this.armor = 0; this.regenRate = 0;
+        for (const power of this.powers.values()) power.apply(this);
+        this.speed = this.baseSpeed;
+    }
+
+    addPower(powerId) {
+        const PowerClass = POWER_REGISTRY[powerId];
+        if (!PowerClass) return false;
+        if (this.powers.has(powerId)) {
+            const p = this.powers.get(powerId);
+            if (p.canUpgrade()) { p.upgrade(); p.apply(this); return true; }
+            return false;
+        } else {
+            const np = new PowerClass();
+            np.upgrade();
+            this.powers.set(powerId, np);
+            np.apply(this);
+            return true;
+        }
+    }
+
+    update(input, canvasWidth, canvasHeight) {
+        this.speed = this.baseSpeed;
+        if (input.left) this.x -= this.speed;
+        if (input.right) this.x += this.speed;
+        if (input.up) this.y -= this.speed;
+        if (input.down) this.y += this.speed;
+        this.x = Math.max(this.width / 2, Math.min(canvasWidth - this.width / 2, this.x));
+        this.y = Math.max(this.height / 2, Math.min(canvasHeight - this.height / 2, this.y));
+        if (this.shootCooldown > 0) this.shootCooldown--;
+        this.engineTimer++;
+        if (this.invulnerable > 0) this.invulnerable--;
+        this.wingAngle = Math.sin(this.engineTimer * 0.05) * 0.1;
+        if (this.regenRate > 0 && this.hp < this.maxHp) {
+            this.regenTimer++;
+            const threshold = Math.max(30, 180 - this.regenRate * 40);
+            if (this.regenTimer >= threshold) { this.regenTimer = 0; this.hp = Math.min(this.maxHp, this.hp + 1); }
+        }
+    }
+
+    draw(ctx) {
+        if (this.invulnerable > 0 && Math.floor(this.invulnerable / 4) % 2 === 0) return;
+        ctx.save();
+        ctx.translate(this.x, this.y);
+
+        // เกราะ
+        if (this.shield > 0) {
+            ctx.strokeStyle = `rgba(0, 200, 255, ${0.25 + this.shield * 0.12})`;
+            ctx.lineWidth = 3;
+            ctx.shadowBlur = 20; ctx.shadowColor = '#00ccff';
+            ctx.beginPath();
+            ctx.arc(0, 0, this.width * 1.0 + Math.sin(Date.now() / 150) * 4, 0, Math.PI * 2);
+            ctx.stroke(); ctx.shadowBlur = 0;
+        }
+
+        // ไฟท้ายเครื่องยนต์ (2 จุด)
+        const flameH1 = 16 + Math.random() * 14;
+        const flameH2 = 14 + Math.random() * 12;
+        ctx.fillStyle = '#0088ff';
+        ctx.globalAlpha = 0.7;
+        ctx.beginPath();
+        ctx.moveTo(-14, this.height / 2 - 6);
+        ctx.lineTo(-8, this.height / 2 + flameH1);
+        ctx.lineTo(-2, this.height / 2 - 6);
+        ctx.closePath(); ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(2, this.height / 2 - 6);
+        ctx.lineTo(8, this.height / 2 + flameH2);
+        ctx.lineTo(14, this.height / 2 - 6);
+        ctx.closePath(); ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // ไฟกลาง (พลังงานหลัก)
+        ctx.fillStyle = '#00ccff';
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(-6, this.height / 2 - 4);
+        ctx.lineTo(0, this.height / 2 + 22 + Math.random() * 8);
+        ctx.lineTo(6, this.height / 2 - 4);
+        ctx.closePath(); ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // ปีกซ้าย
+        ctx.save();
+        ctx.rotate(-0.15 + this.wingAngle);
+        ctx.fillStyle = '#001a33';
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 2.5;
+        ctx.shadowBlur = 15; ctx.shadowColor = this.color;
+        ctx.beginPath();
+        ctx.moveTo(-8, -5);
+        ctx.lineTo(-this.width / 2 - 5, this.height / 2 - 10);
+        ctx.lineTo(-12, this.height / 2 - 5);
+        ctx.lineTo(-6, 5);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.restore();
+
+        // ปีกขวา
+        ctx.save();
+        ctx.rotate(0.15 - this.wingAngle);
+        ctx.fillStyle = '#001a33';
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 2.5;
+        ctx.shadowBlur = 15; ctx.shadowColor = this.color;
+        ctx.beginPath();
+        ctx.moveTo(8, -5);
+        ctx.lineTo(this.width / 2 + 5, this.height / 2 - 10);
+        ctx.lineTo(12, this.height / 2 - 5);
+        ctx.lineTo(6, 5);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.restore();
+
+        // ลำตัวหลัก (ทรงสามเหลี่ยมไฮเทค)
+        ctx.fillStyle = '#001a2e';
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 30; ctx.shadowColor = this.color;
+        ctx.beginPath();
+        ctx.moveTo(0, -this.height / 2 - 5); // หัวแหลม
+        ctx.lineTo(this.width / 2 - 2, this.height / 2 - 8);
+        ctx.lineTo(0, this.height / 2 - 18); // ซอกหาง
+        ctx.lineTo(-this.width / 2 + 2, this.height / 2 - 8);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+
+        // แถบไฟ LED รอบลำตัว
+        ctx.strokeStyle = 'rgba(0, 230, 255, 0.6)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(0, -this.height / 2 + 10);
+        ctx.lineTo(0, this.height / 2 - 20);
+        ctx.stroke();
+
+        // ค็อกพิท (เรืองแสง)
+        ctx.fillStyle = '#00ffff';
+        ctx.shadowBlur = 20; ctx.shadowColor = '#00ffff';
+        ctx.beginPath(); ctx.arc(0, -8, 8, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.arc(0, -8, 3, 0, Math.PI * 2); ctx.fill();
+
+        // ปืนข้าง
+        ctx.fillStyle = '#003344';
+        ctx.strokeStyle = '#00aacc';
+        ctx.lineWidth = 1.5;
+        ctx.shadowBlur = 8; ctx.shadowColor = '#00aacc';
+        ctx.fillRect(-22, -5, 6, 18);
+        ctx.strokeRect(-22, -5, 6, 18);
+        ctx.fillRect(16, -5, 6, 18);
+        ctx.strokeRect(16, -5, 6, 18);
+
+        ctx.restore();
+    }
+
+    canShoot() { return this.shootCooldown <= 0; }
+
+    shoot() {
+        this.shootCooldown = this.shootDelay;
+        const bullets = [];
+        const count = this.shotCount;
+        const spreadAngle = Math.min(70, (count - 1) * 10);
+        const startAngle = -spreadAngle / 2;
+        const step = count > 1 ? spreadAngle / (count - 1) : 0;
+        for (let i = 0; i < count; i++) {
+            const angleDeg = startAngle + step * i;
+            const angleRad = (angleDeg - 90) * (Math.PI / 180);
+            const speed = this.bulletSpeed || 12;
+            const vx = Math.cos(angleRad) * speed;
+            const vy = Math.sin(angleRad) * speed;
+            bullets.push(new Bullet(this.x, this.y - this.height / 2, vy, '#00ffff', {
+                vx: vx, damage: this.bulletDamage, pierce: this.pierceCount
+            }));
+        }
+        return bullets;
+    }
+
+    takeDamage(amount) {
+        if (this.invulnerable > 0) return false;
+        let reduced = amount;
+        if (this.armor > 0) reduced = Math.max(1, amount - this.armor);
+        if (this.shield > 0) { this.shield--; this.invulnerable = 30; return true; }
+        this.hp -= reduced;
+        if (this.hp < 0) this.hp = 0;
+        this.invulnerable = 60;
+        return true;
+    }
+
+    getBounds() {
+        const shrink = 5;
+        return { x: this.x - this.width / 2 + shrink, y: this.y - this.height / 2 + shrink, w: this.width - shrink * 2, h: this.height - shrink * 2 };
+    }
+}
+
+// ============================================
+// POWER-UP SYSTEM
+// ============================================
+class PowerUp {
+    constructor(id, name, description, icon, maxLevel, color) {
+        this.id = id; this.name = name; this.description = description;
+        this.icon = icon;
+        this.maxLevel = maxLevel;
+        this.level = 0;
+        this.color = color;
+    }
+    apply(player) {}
+    getLevelDescription() { return this.description; }
+    canUpgrade() { return this.level < this.maxLevel; }
+    upgrade() { if (this.canUpgrade()) { this.level++; return true; } return false; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-size * 0.3, size * 0.05);
+        ctx.lineTo(0, -size * 0.35);
+        ctx.lineTo(size * 0.3, size * 0.05);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, size * 0.08, size * 0.08, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+class RapidFirePower extends PowerUp {
+    constructor() { super('rapid', 'Rapid Fire', 'เพิ่มความเร็วการยิง', '', 5, '#ffdd00'); }
+    apply(player) { const delays = [10, 9, 8, 7, 6, 5]; player.shootDelay = delays[Math.min(this.level, delays.length - 1)]; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.strokeStyle = this.color; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(-size * 0.28, size * 0.1); ctx.lineTo(0, -size * 0.35); ctx.lineTo(size * 0.28, size * 0.1); ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, 0, size * 0.08, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+    }
+    getLevelDescription() { const d = ['', 'ยิงเร็วขึ้น', 'ยิงเร็วขึ้นมาก', 'ยิงเร็วปานกลาง', 'ยิงเร็วขึ้นเยอะ', 'ยิงไวสุด!']; return d[this.level] || this.description; }
+}
+
+class MultiShotPower extends PowerUp {
+    constructor() { super('multi', 'Multi Shot', 'ยิงกระสุนเพิ่มขึ้น', '', 5, '#00ff88'); }
+    apply(player) { const c = [1, 2, 3, 4, 5, 6]; player.shotCount = c[Math.min(this.level, c.length - 1)]; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.strokeStyle = this.color; ctx.lineWidth = 2.5;
+        for (let i = -1; i <= 1; i++) {
+            ctx.beginPath(); ctx.moveTo(i * size * 0.15, size * 0.25); ctx.lineTo(i * size * 0.15, -size * 0.25); ctx.stroke();
+        }
+        ctx.restore();
+    }
+    getLevelDescription() { const d = ['', 'ยิง 2 นัด', 'ยิง 3 นัด', 'ยิง 4 นัด', 'ยิง 5 นัด', 'ยิง 6 นัด!']; return d[this.level] || this.description; }
+}
+
+class PiercePower extends PowerUp {
+    constructor() { super('pierce', 'Pierce Shot', 'กระสุนทะลุศัตรู', '', 3, '#ff66ff'); }
+    apply(player) { player.pierceCount = this.level; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.strokeStyle = this.color; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(-size * 0.2, -size * 0.1); ctx.lineTo(size * 0.2, -size * 0.1); ctx.lineTo(size * 0.2, size * 0.1); ctx.lineTo(-size * 0.2, size * 0.1); ctx.closePath(); ctx.stroke();
+        ctx.restore();
+    }
+    getLevelDescription() { const d = ['', 'ทะลุ 1 ตัว', 'ทะลุ 2 ตัว', 'ทะลุ 3 ตัว!']; return d[this.level] || this.description; }
+}
+
+class ShieldPower extends PowerUp {
+    constructor() { super('shield', 'Energy Shield', 'เกราะกันกระสุน', '', 3, '#00ccff'); }
+    apply(player) { player.shieldMax = this.level; if (player.shield < player.shieldMax) player.shield = player.shieldMax; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.strokeStyle = this.color; ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-size * 0.25, -size * 0.1);
+        ctx.lineTo(-size * 0.15, -size * 0.35);
+        ctx.lineTo(size * 0.15, -size * 0.35);
+        ctx.lineTo(size * 0.25, -size * 0.1);
+        ctx.lineTo(0, size * 0.35);
+        ctx.closePath(); ctx.stroke();
+        ctx.restore();
+    }
+    getLevelDescription() { const d = ['', 'เกราะ 1 ชั้น', 'เกราะ 2 ชั้น', 'เกราะ 3 ชั้น!']; return d[this.level] || this.description; }
+}
+
+class SpeedPower extends PowerUp {
+    constructor() { super('speed', 'Turbo Engine', 'เพิ่มความเร็วยาน', '', 5, '#ffaa33'); }
+    apply(player) { const speedMap = [4.4, 4.7, 4.95, 5.15, 5.35, 5.55]; player.baseSpeed = speedMap[Math.min(this.level, speedMap.length - 1)]; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.strokeStyle = this.color; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(-size * 0.2, size * 0.25); ctx.lineTo(0, -size * 0.35); ctx.lineTo(size * 0.2, size * 0.25); ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, size * 0.05, size * 0.08, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+    }
+    getLevelDescription() { const d = ['', 'เร็วขึ้นเล็กน้อย', 'เร็วขึ้นปานกลาง', 'เร็วขึ้นเล็กน้อย', 'เร็วขึ้นเมื่อยานเล็กน้อย', 'สุดยอดสปีด']; return d[this.level] || this.description; }
+}
+
+class DamagePower extends PowerUp {
+    constructor() { super('damage', 'Overcharge', 'เพิ่มดาเมจกระสุน', '', 5, '#ff3333'); }
+    apply(player) { const dmgMap = [1, 1, 1, 2, 2, 2]; player.bulletDamage = dmgMap[Math.min(this.level, dmgMap.length - 1)]; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.fillStyle = this.color;
+        ctx.beginPath(); ctx.moveTo(0, -size * 0.35); ctx.lineTo(size * 0.18, -size * 0.02);
+        ctx.lineTo(size * 0.08, size * 0.35); ctx.lineTo(-size * 0.08, size * 0.12); ctx.lineTo(-size * 0.25, size * 0.28);
+        ctx.lineTo(-size * 0.07, -size * 0.02); ctx.closePath(); ctx.fill();
+        ctx.restore();
+    }
+    getLevelDescription() { const d = ['', 'ดาเมจเบา', 'ดาเมจปานกลาง', 'ดาเมจขึ้นเล็กน้อย', 'ดาเมจมากขึ้น', 'ดาเมจสูง']; return d[this.level] || this.description; }
+}
+
+class RegenPower extends PowerUp {
+    constructor() { super('regen', 'Nano Repair', 'ฟื้นฟู HP อัตโนมัติ', '', 3, '#ff6699'); }
+    apply(player) { player.regenRate = this.level; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.strokeStyle = this.color; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(0, 0, size * 0.25, Math.PI * 0.1, Math.PI * 1.9);
+        ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(-size * 0.1, -size * 0.1); ctx.lineTo(size * 0.1, size * 0.18); ctx.stroke();
+        ctx.restore();
+    }
+    getLevelDescription() { const d = ['', 'ฟื้นฟูช้า', 'ฟื้นฟูปานกลาง', 'ฟื้นฟูเร็ว!']; return d[this.level] || this.description; }
+}
+
+class RepairKitPower extends PowerUp {
+    constructor() { super('repair', 'Repair Kit', 'ฟื้นฟู HP 50%', '', 1, '#00ff66'); }
+    apply(player) { player.hp = Math.min(player.maxHp, player.hp + Math.floor(player.maxHp * 0.5)); }
+    getLevelDescription() { return 'ฟื้นฟู HP 50% ทันที'; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.strokeStyle = this.color; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(-size * 0.3, -size * 0.2); ctx.lineTo(-size * 0.3, size * 0.2);
+        ctx.moveTo(size * 0.3, -size * 0.2); ctx.lineTo(size * 0.3, size * 0.2);
+        ctx.moveTo(-size * 0.15, 0); ctx.lineTo(size * 0.15, 0);
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+class HullPower extends PowerUp {
+    constructor() { super('hull', 'Hull Plating', 'เพิ่ม HP และพลังป้องกัน', '', 4, '#6699ff'); }
+    apply(player) { player.maxHp = 120 + this.level * 18; if (player.hp < player.maxHp) player.hp = Math.min(player.maxHp, player.hp + 8); player.armor = this.level; }
+    getLevelDescription() { const d = ['', '+20 HP', '+40 HP', '+60 HP', '+80 HP']; return d[this.level] || this.description; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.fillStyle = this.color; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-size * 0.35, -size * 0.1);
+        ctx.lineTo(-size * 0.1, -size * 0.4);
+        ctx.lineTo(size * 0.1, -size * 0.4);
+        ctx.lineTo(size * 0.35, -size * 0.1);
+        ctx.lineTo(0, size * 0.45);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.restore();
+    }
+}
+
+class ArmorPower extends PowerUp {
+    constructor() { super('armor', 'Armor Matrix', 'ลดดาเมจที่ได้รับ', '', 3, '#88ccff'); }
+    apply(player) { player.armor = Math.max(player.armor, this.level); }
+    getLevelDescription() { const d = ['', 'ลดดาเมจ 1', 'ลดดาเมจ 2', 'ลดดาเมจ 3']; return d[this.level] || this.description; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.strokeStyle = this.color; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.moveTo(-size * 0.4, -size * 0.15);
+        ctx.lineTo(-size * 0.2, -size * 0.4);
+        ctx.lineTo(size * 0.2, -size * 0.4);
+        ctx.lineTo(size * 0.4, -size * 0.15);
+        ctx.lineTo(size * 0.1, size * 0.45);
+        ctx.lineTo(-size * 0.1, size * 0.45);
+        ctx.closePath(); ctx.stroke();
+        ctx.restore();
+    }
+}
+
+class PulsePower extends PowerUp {
+    constructor() { super('pulse', 'Pulse Drive', 'เพิ่มความเร็วกระสุน', '', 4, '#ff88cc'); }
+    apply(player) { const speedMap = [12, 13, 14, 15, 16]; player.bulletSpeed = speedMap[Math.min(this.level, speedMap.length - 1)]; }
+    getLevelDescription() { const d = ['', 'กระสุนเร็วขึ้นเล็กน้อย', 'กระสุนเร็วขึ้น', 'กระสุนเร็วขึ้นมาก', 'กระสุนสูงสุด']; return d[this.level] || this.description; }
+    drawIcon(ctx, x, y, size) {
+        ctx.save(); ctx.translate(x, y);
+        ctx.strokeStyle = this.color; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-size * 0.25, size * 0.15);
+        ctx.lineTo(0, -size * 0.35);
+        ctx.lineTo(size * 0.25, size * 0.15);
+        ctx.moveTo(0, -size * 0.35);
+        ctx.lineTo(0, size * 0.35);
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+const POWER_REGISTRY = {
+    'rapid': RapidFirePower, 'multi': MultiShotPower, 'pierce': PiercePower,
+    'shield': ShieldPower, 'speed': SpeedPower, 'damage': DamagePower,
+    'regen': RegenPower, 'repair': RepairKitPower,
+    'hull': HullPower, 'armor': ArmorPower, 'pulse': PulsePower
+};
+const POWER_POOL = ['rapid', 'multi', 'pierce', 'shield', 'speed', 'damage', 'regen', 'hull', 'armor', 'pulse'];
+
+// ============================================
+// GAME CONTROLLER - ระบบหลักทั้งหมด
+// ============================================
+class Game {
+    constructor() {
+        this.ctx = ctx;
+        this.width = canvas.width;
+        this.height = canvas.height;
+        this.audio = new AudioManager();
+        this.state = 'MENU';
+        this.score = 0;
+        this.highScore = 0;
+        try { const s = localStorage.getItem('neonShooterFinal_v3'); if (s) this.highScore = parseInt(s); } catch (e) {}
+        this.player = null;
+        this.bullets = [];
+        this.enemies = [];
+        this.boss = null;
+        this.particles = [];
+        this.starsBack = [];
+        this.starsFront = [];
+        this.nebulas = [];
+        this.initStars();
+        this.input = { left: false, right: false, up: false, down: false, shoot: false };
+        this.bindInput();
+        this.spawnTimer = 0;
+        this.spawnInterval = 55;
+        this.difficulty = 1;
+        this.gameTime = 0;
+        this.shake = 0;
+        this.gridOffset = 0;
+        this.enemyIdCounter = 0;
+        this.upgradeOptions = [];
+        this.upgradeSelection = 0;
+        this.pendingLevelUp = false;
+
+        // --- ระบบเวลา 15 นาที ---
+        this.gameDuration = 15 * 60; // 15 นาที = 900 วินาที (แต่เราใช้เฟรมนับ)
+        this.gameTimer = 0; // นับเป็นเฟรม (60fps = 1 วิ = 60 เฟรม)
+        this.totalFrames = 0;
+        this.bossSpawned = [false, false, false]; // บอสด่าน 1,2,3 เกิดแล้วหรือยัง
+        this.bossDefeated = [false, false, false];
+        this.victory = false;
+        this.warningTimer = 0;
+
+        this.loop = this.loop.bind(this);
+        requestAnimationFrame(this.loop);
+    }
+
+    initStars() {
+        for (let i = 0; i < 150; i++) this.starsBack.push(new Star(this.width, this.height, 0.5));
+        for (let i = 0; i < 60; i++) this.starsFront.push(new Star(this.width, this.height, 1.8));
+        for (let i = 0; i < 8; i++) this.nebulas.push(new Star(this.width, this.height, 0.05, true));
+    }
+
+    bindInput() {
+        window.addEventListener('keydown', (e) => {
+            if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+            if (this.state === 'MENU' && !this.audio.isPlaying) {
+                this.audio.init();
+                this.audio.startBGM('menu');
+            }
+            if (this.state === 'MENU') {
+                if (e.code === 'Space' || e.code === 'Enter') {
+                    this.startGame();
+                }
+            }
+            if (this.state === 'UPGRADE') {
+                if (e.code === 'ArrowLeft' || e.code === 'KeyA') this.upgradeSelection = Math.max(0, this.upgradeSelection - 1);
+                if (e.code === 'ArrowRight' || e.code === 'KeyD') this.upgradeSelection = Math.min(2, this.upgradeSelection + 1);
+                if (e.code === 'Space' || e.code === 'Enter') this.selectUpgrade(this.upgradeSelection);
+                return;
+            }
+            if (e.code === 'ArrowLeft' || e.code === 'KeyA') this.input.left = true;
+            if (e.code === 'ArrowRight' || e.code === 'KeyD') this.input.right = true;
+            if (e.code === 'ArrowUp' || e.code === 'KeyW') this.input.up = true;
+            if (e.code === 'ArrowDown' || e.code === 'KeyS') this.input.down = true;
+            if (e.code === 'Space') {
+                this.input.shoot = true;
+                if (this.state === 'MENU') {
+                    this.startGame();
+                }
+                if (this.state === 'GAMEOVER' || this.state === 'VICTORY') {
+                    this.startGame();
+                }
+            }
+        });
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowLeft' || e.code === 'KeyA') this.input.left = false;
+            if (e.code === 'ArrowRight' || e.code === 'KeyD') this.input.right = false;
+            if (e.code === 'ArrowUp' || e.code === 'KeyW') this.input.up = false;
+            if (e.code === 'ArrowDown' || e.code === 'KeyS') this.input.down = false;
+            if (e.code === 'Space') this.input.shoot = false;
+        });
+    }
+
+    startGame() {
+        this.audio.init();
+        this.audio.startBGM('normal');
+        this.state = 'PLAYING';
+        this.score = 0;
+        this.player = new Player(this.width / 2, this.height - 140);
+        this.bullets = [];
+        this.enemies = [];
+        this.boss = null;
+        this.particles = [];
+        this.spawnTimer = 0;
+        this.spawnInterval = 55;
+        this.difficulty = 1;
+        this.gameTime = 0;
+        this.shake = 0;
+        this.enemyIdCounter = 0;
+        this.items = [];
+        this.lastMinuteLevel = 0;
+        this.itemDropTimer = 0;
+        this.upgradeOptions = [];
+        this.pendingLevelUp = false;
+        this.gameTimer = 0;
+        this.totalFrames = 0;
+        this.bossSpawned = [false, false, false];
+        this.bossDefeated = [false, false, false];
+        this.victory = false;
+        this.warningTimer = 0;
+    }
+
+    gameOver() {
+        this.state = 'GAMEOVER';
+        this.audio.stopBGM();
+        if (this.score > this.highScore) {
+            this.highScore = this.score;
+            try { localStorage.setItem('neonShooterFinal_v3', this.highScore); } catch (e) {}
+        }
+        this.createExplosion(this.player.x, this.player.y, '#00ffff', 50, true);
+        this.createExplosion(this.player.x, this.player.y, '#ffffff', 30, true);
+    }
+
+    winGame() {
+        this.state = 'VICTORY';
+        this.victory = true;
+        this.audio.stopBGM();
+        this.audio.playWin();
+        // เอฟเฟกต์ชนะ
+        for (let i = 0; i < 20; i++) {
+            setTimeout(() => {
+                this.createExplosion(
+                    Math.random() * this.width,
+                    Math.random() * this.height,
+                    ['#ffdd00', '#00ff88', '#00ccff', '#ff66ff'][Math.floor(Math.random() * 4)],
+                    20, true
+                );
+            }, i * 100);
+        }
+    }
+
+    generateUpgradeOptions() {
+        const options = []; const available = [];
+        for (const pid of POWER_POOL) {
+            if (!this.player.powers.has(pid)) {
+                const PClass = POWER_REGISTRY[pid];
+                available.push({ power: new PClass(), isNew: true });
+            }
+        }
+        for (const [pid, p] of this.player.powers) {
+            if (p.canUpgrade()) available.push({ power: p, isNew: false });
+        }
+        const usedIds = new Set();
+        while (options.length < 3 && available.length > 0) {
+            const idx = Math.floor(Math.random() * available.length);
+            const item = available[idx];
+            if (!usedIds.has(item.power.id)) { usedIds.add(item.power.id); options.push(item); }
+            available.splice(idx, 1);
+        }
+        while (options.length < 3) options.push({ power: new RepairKitPower(), isNew: true });
+        this.upgradeOptions = options; this.upgradeSelection = 1;
+    }
+
+    selectUpgrade(index) {
+        if (index < 0 || index >= this.upgradeOptions.length) return;
+        const selected = this.upgradeOptions[index];
+        this.player.addPower(selected.power.id);
+        this.state = 'PLAYING'; this.pendingLevelUp = false; this.upgradeOptions = [];
+    }
+
+    spawnEnemy() {
+        const x = Math.random() * (this.width - 100) + 50;
+        const rand = Math.random();
+        const minuteLevel = Math.min(6, Math.floor(this.gameTimer / 60));
+        const timeRatio = this.gameTimer / (this.gameDuration * 60);
+        let type = 'scout';
+        if (rand > 0.60 - minuteLevel * 0.04 - timeRatio * 0.07) type = 'striker';
+        if (rand > 0.74 - minuteLevel * 0.05 - timeRatio * 0.07) type = 'interceptor';
+        if (rand > 0.86 - minuteLevel * 0.03 - timeRatio * 0.05) type = 'drone';
+        if (rand > 0.92 - minuteLevel * 0.03 - timeRatio * 0.04) type = 'bomber';
+        if (rand > 0.96 - minuteLevel * 0.02 - timeRatio * 0.03) type = 'destroyer';
+        if (minuteLevel >= 2 && rand > 0.98 - minuteLevel * 0.01 - timeRatio * 0.02) type = 'warden';
+        if (minuteLevel >= 4 && rand > 0.992 - minuteLevel * 0.005 - timeRatio * 0.01) type = 'elite';
+        this.enemies.push(new Enemy(x, -60, type, this.enemyIdCounter++, minuteLevel));
+    }
+
+    spawnRandomItem() {
+        const x = Math.random() * (this.width - 120) + 60;
+        const y = -30;
+        const rand = Math.random();
+        let type = 'heal';
+        if (rand > 0.7) type = 'shield';
+        if (rand > 0.92) type = 'invul';
+        this.items.push(new Item(x, y, type));
+    }
+
+    applyItemPickup(item) {
+        if (!this.player) return;
+        if (item.type === 'heal') {
+            this.player.hp = Math.min(this.player.maxHp, this.player.hp + 40);
+        } else if (item.type === 'shield') {
+            this.player.shieldMax = Math.max(this.player.shieldMax, 1);
+            this.player.shield = Math.min(this.player.shieldMax, this.player.shield + 1);
+        } else if (item.type === 'invul') {
+            this.player.invulnerable = 120;
+        }
+        this.audio.playPickup();
+        const glow = item.type === 'heal' ? '#00ff88' : item.type === 'shield' ? '#33ccff' : '#ffdd55';
+        this.createExplosion(item.x, item.y, glow, 10, false);
+    }
+
+    createExplosion(x, y, color, count = 15, big = false) {
+        const palette = [color, '#ffffff', '#ffaa00', '#ff00ff', '#00ffff'];
+        for (let i = 0; i < count; i++) {
+            const c = palette[Math.floor(Math.random() * palette.length)];
+            const speed = Math.random() * (big ? 8 : 5) + 2;
+            const life = Math.random() * (big ? 40 : 25) + 15;
+            const type = Math.random() > 0.7 ? 'spark' : 'normal';
+            this.particles.push(new Particle(x, y, c, speed, life, null, type));
+        }
+        if (big) {
+            // Shockwave
+            this.particles.push(new Particle(x, y, color, 0, 30, 20, 'shock'));
+        }
+    }
+
+    checkCollision(a, b) {
+        return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    spawnEngineParticles() {
+        if (!this.player) return;
+        const x = this.player.x + (Math.random() - 0.5) * 16;
+        const y = this.player.y + this.player.height / 2;
+        const color = Math.random() > 0.5 ? '#00aaff' : '#00ffff';
+        this.particles.push(new Particle(x, y, color, 1.5, 10, 2));
+    }
+
+    // ============================================
+    // UPDATE - ระบบหลัก
+    // ============================================
+    update() {
+        const time = Date.now();
+        this.starsBack.forEach(s => s.update(this.height));
+        this.starsFront.forEach(s => s.update(this.height));
+        this.nebulas.forEach(s => s.update(this.height));
+        this.gridOffset = (this.gridOffset + 0.4) % 40;
+
+        if (this.state === 'UPGRADE') return;
+        if (this.state !== 'PLAYING') return;
+
+        this.gameTime++;
+        this.totalFrames++;
+        this.gameTimer = Math.floor(this.totalFrames / 60); // วินาทีจริง
+
+        // --- ตรวจสอบชัยชนะ (รอด 15 นาที) ---
+        if (this.gameTimer >= this.gameDuration) {
+            this.winGame();
+            return;
+        }
+
+        // --- สปอว์นบอสทุก 5 นาที ---
+        const bossMinutes = [5, 10, 15];
+        for (let i = 0; i < 3; i++) {
+            if (this.gameTimer >= bossMinutes[i] * 60 && !this.bossSpawned[i] && !this.bossDefeated[i]) {
+                this.bossSpawned[i] = true;
+                this.boss = new Boss(i + 1, this.width);
+                this.audio.playBossAlert();
+                this.audio.changeMusic(i === 0 ? 'boss1' : i === 1 ? 'boss2' : 'final');
+                this.warningTimer = 180; // 3 วินาทีแสดงเตือน
+                // ลบศัตรูทั้งหมดตอนบอสมา
+                this.enemies = [];
+            }
+        }
+
+        // --- ความยากเพิ่มตามเวลา ---
+        const minuteLevel = Math.floor(this.gameTimer / 60);
+        const timeRatio = this.gameTimer / this.gameDuration;
+        this.difficulty = 1 + minuteLevel * 0.55;
+        this.spawnInterval = Math.max(18, 70 - minuteLevel * 6 - timeRatio * 12);
+        if (minuteLevel !== this.lastMinuteLevel) {
+            this.lastMinuteLevel = minuteLevel;
+            this.spawnTimer = 0;
+        }
+
+        // --- อัพเดตผู้เล่น ---
+        this.player.update(this.input, this.width, this.height);
+        if (this.gameTime % 2 === 0) this.spawnEngineParticles();
+
+        // --- ยิงกระสุน ---
+        if (this.input.shoot && this.player.canShoot()) {
+            const newBullets = this.player.shoot();
+            this.bullets.push(...newBullets);
+            this.audio.playShoot();
+        }
+
+        // --- อัพเดตกระสุน ---
+        this.bullets = this.bullets.filter(b => { b.update(); return b.active; });
+
+        // --- อัพเดตไอเท็ม ---
+        this.items = this.items.filter(item => { item.update(); return item.active; });
+        for (let item of this.items) {
+            if (this.checkCollision(item.getBounds(), this.player.getBounds())) {
+                item.active = false;
+                this.applyItemPickup(item);
+            }
+        }
+
+        // --- สปอว์นศัตรู (ไม่สปอว์นตอนบอสอยู่ ยกเว้นบอสด่าน 3) ---
+        if (!this.boss || this.boss.tier === 3) {
+            this.spawnTimer++;
+            if (this.spawnTimer >= this.spawnInterval) {
+                const extra = Math.min(3, 1 + Math.floor(this.gameTimer / 60));
+                for (let i = 0; i < extra; i++) this.spawnEnemy();
+                this.spawnTimer = 0;
+            }
+        }
+
+        // --- อัพเดตบอส ---
+        if (this.boss && this.boss.active) {
+            this.boss.update(this.player.x, this.player.y, this.gameTime);
+
+            // บอสยิงกระสุน
+            if (this.boss.phase === 'idle' && this.boss.shootTimer++ > 40) {
+                this.boss.shootTimer = 0;
+                const bossBullets = this.boss.getBossBullets();
+                this.bullets.push(...bossBullets);
+            }
+
+            // ตรวจชนกระสุนกับบอส
+            for (let b of this.bullets) {
+                if (!b.active || b.isEnemy) continue;
+                if (this.checkCollision(this.boss.getBounds(), b.getBounds())) {
+                    b.active = false;
+                    this.createExplosion(b.x, b.y, '#ff4444', 4);
+                    if (this.boss.takeDamage(b.damage)) {
+                        // บอสตาย
+                        this.score += this.boss.score;
+                        this.player.gainXp(this.boss.xpValue);
+                        this.bossDefeated[this.boss.tier - 1] = true;
+                        this.shake = 20;
+                        this.createExplosion(this.boss.x, this.boss.y, this.boss.color, 60, true);
+                        this.audio.playExplosion(3);
+                        this.boss = null;
+                        this.audio.changeMusic('normal');
+                        break;
+                    }
+                    this.audio.playHit();
+                }
+            }
+
+            // ตรวจชนบอสกับผู้เล่น
+            if (this.boss && this.checkCollision(this.boss.getBounds(), this.player.getBounds())) {
+                if (this.player.takeDamage(30)) {
+                    this.shake = 15;
+                    this.audio.playHit();
+                }
+                if (this.player.hp <= 0) this.gameOver();
+            }
+        }
+
+        // --- อัพเดตศัตรู ---
+        this.enemies = this.enemies.filter(enemy => {
+            enemy.update(this.player.x, this.player.y, this.gameTime);
+
+            // ชนกับผู้เล่น
+            if (this.checkCollision(enemy.getBounds(), this.player.getBounds())) {
+                if (this.player.takeDamage(enemy.type === 'bomber' ? 30 : 20)) {
+                    this.shake = 12;
+                    this.createExplosion(enemy.x, enemy.y, enemy.color, 12);
+                    this.audio.playHit();
+                }
+                if (this.player.hp <= 0) this.gameOver();
+                return false;
+            }
+
+            // ศัตรู elite ยิงกลับ
+            if (enemy.canShoot()) {
+                enemy.resetShoot();
+                const angle = Math.atan2(this.player.y - enemy.y, this.player.x - enemy.x);
+                this.bullets.push(new Bullet(
+                    enemy.x, enemy.y + enemy.height / 2,
+                    Math.sin(angle) * 5, '#ff3366',
+                    { vx: Math.cos(angle) * 5, isEnemy: true, damage: 1 }
+                ));
+            }
+
+            // ชนกับกระสุน
+            for (let b of this.bullets) {
+                if (!b.active || b.isEnemy) continue;
+                if (b.alreadyHit.has(enemy.id)) continue;
+                if (this.checkCollision(enemy.getBounds(), b.getBounds())) {
+                    b.alreadyHit.add(enemy.id);
+                    this.createExplosion(b.x, b.y, '#ffffff', 3);
+                    if (enemy.takeDamage(b.damage)) {
+                        this.score += enemy.score;
+                        const leveledUp = this.player.gainXp(enemy.xpValue);
+                        if (leveledUp) this.pendingLevelUp = true;
+                        this.shake = enemy.type === 'destroyer' || enemy.type === 'bomber' ? 10 : 5;
+                        this.createExplosion(enemy.x, enemy.y, enemy.color, enemy.type === 'destroyer' || enemy.type === 'bomber' ? 25 : 12, enemy.type === 'bomber');
+                        this.audio.playExplosion(enemy.type === 'destroyer' ? 2 : 1);
+                        // ไม่มีดรอปจากศัตรูปกติอีกต่อไป; ไอเท็มจะมาจาก spawn ทุก ๆ 30 วินาที
+                        // if (Math.random() < 0.22) {
+                        //     const drops = ['heal', 'shield', 'invul'];
+                        //     const idx = Math.floor(Math.random() * drops.length);
+                        //     this.items.push(new Item(enemy.x, enemy.y, drops[idx]));
+                        // }
+                        return false;
+                    }
+                    if (b.pierceLeft <= 0) b.active = false;
+                    else b.pierceLeft--;
+                    break;
+                }
+            }
+            return enemy.active;
+        });
+
+        // กระสุนศัตรูโดนผู้เล่น
+        for (let b of this.bullets) {
+            if (!b.active || !b.isEnemy) continue;
+            if (this.checkCollision(b.getBounds(), this.player.getBounds())) {
+                b.active = false;
+                if (this.player.takeDamage(15)) {
+                    this.shake = 10;
+                    this.audio.playHit();
+                }
+                if (this.player.hp <= 0) this.gameOver();
+            }
+        }
+
+        // ไอเท็มปรากฏทุก 30 วินาที
+        this.itemDropTimer++;
+        if (this.itemDropTimer >= 1800) {
+            this.spawnRandomItem();
+            this.itemDropTimer = 0;
+        }
+
+        // เลเวลอัพ
+        if (this.pendingLevelUp && this.state === 'PLAYING') {
+            this.state = 'UPGRADE';
+            this.generateUpgradeOptions();
+            this.audio.playLevelUp();
+        }
+
+        // อัพเดตอนุภาค
+        this.particles = this.particles.filter(p => { p.update(); return !p.isDead; });
+
+        // ลดแรงสั่น
+        if (this.shake > 0) { this.shake *= 0.9; if (this.shake < 0.5) this.shake = 0; }
+        if (this.warningTimer > 0) this.warningTimer--;
+    }
+
+    // ============================================
+    // DRAW - วาดทั้งหมด
+    // ============================================
+    draw() {
+        const time = Date.now();
+        // พื้นหลัง gradient
+        const grad = this.ctx.createLinearGradient(0, 0, 0, this.height);
+        grad.addColorStop(0, '#000011');
+        grad.addColorStop(0.5, '#0a0a1e');
+        grad.addColorStop(1, '#050510');
+        this.ctx.fillStyle = grad;
+        this.ctx.fillRect(0, 0, this.width, this.height);
+
+        this.ctx.save();
+        if (this.shake > 0) {
+            this.ctx.translate((Math.random() - 0.5) * this.shake, (Math.random() - 0.5) * this.shake);
+        }
+
+        // Dynamic cosmic backdrop
+        if (this.state !== 'MENU') this.drawCosmicBackdrop(time);
+        this.nebulas.forEach(s => s.draw(this.ctx, time));
+        this.drawGrid();
+        this.starsBack.forEach(s => s.draw(this.ctx, time));
+        this.starsFront.forEach(s => s.draw(this.ctx, time));
+
+        if (this.state === 'MENU') { this.drawMenu(time); this.ctx.restore(); return; }
+
+        this.items.forEach(item => item.draw(this.ctx));
+        this.bullets.forEach(b => b.draw(this.ctx));
+        this.enemies.forEach(e => e.draw(this.ctx));
+        if (this.boss) this.boss.draw(this.ctx);
+        if (this.player) this.player.draw(this.ctx);
+        this.particles.forEach(p => p.draw(this.ctx));
+        this.drawHUD();
+        if (this.boss && this.boss.phase !== 'dead') this.drawBossBar();
+        this.ctx.restore();
+
+        // แจ้งเตือนบอส (ทับทุกอย่าง)
+        if (this.warningTimer > 0) this.drawBossWarning();
+
+        if (this.state === 'UPGRADE') this.drawUpgradeScreen(time);
+        if (this.state === 'GAMEOVER') this.drawGameOver(time);
+        if (this.state === 'VICTORY') this.drawVictory(time);
+    }
+
+    drawCosmicBackdrop(time) {
+        const minuteLevel = Math.floor(this.gameTimer / 60);
+        if (minuteLevel >= 10) {
+            const holeX = this.width * 0.5;
+            const holeY = this.height * 0.35;
+            const holeSize = 180 + Math.sin(time / 250) * 12;
+            const hole = this.ctx.createRadialGradient(holeX, holeY, 0, holeX, holeY, holeSize);
+            hole.addColorStop(0, 'rgba(0,0,0,0)');
+            hole.addColorStop(0.55, 'rgba(0, 0, 10, 0.4)');
+            hole.addColorStop(1, 'rgba(0, 0, 0, 1)');
+            this.ctx.fillStyle = hole;
+            this.ctx.fillRect(holeX - holeSize, holeY - holeSize, holeSize * 2, holeSize * 2);
+
+            for (let i = 0; i < 10; i++) {
+                const angle = time / 400 + i * 0.6;
+                const radius = holeSize + 50 + i * 8;
+                this.ctx.strokeStyle = `rgba(160, 210, 255, ${0.08 - i * 0.005})`;
+                this.ctx.lineWidth = 1.2;
+                this.ctx.beginPath();
+                this.ctx.arc(holeX, holeY, radius, angle, angle + Math.PI * 1.2);
+                this.ctx.stroke();
+            }
+
+            for (let i = 0; i < 30; i++) {
+                const sx = holeX + (Math.random() - 0.5) * 1400;
+                const sy = holeY + (Math.random() - 0.5) * 260;
+                const r = Math.random() * 2.5 + 0.5;
+                const alpha = Math.max(0, 0.15 - Math.abs((sy - holeY) / 180) * 0.07);
+                this.ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+                this.ctx.beginPath();
+                this.ctx.arc(sx, sy, r, 0, Math.PI * 2);
+                this.ctx.fill();
+            }
+        } else if (minuteLevel >= 5) {
+            const galaxyX = this.width * 0.6;
+            const galaxyY = this.height * 0.3;
+            const galaxy = this.ctx.createRadialGradient(galaxyX, galaxyY, 0, galaxyX, galaxyY, 230);
+            galaxy.addColorStop(0, 'rgba(255, 140, 240, 0.24)');
+            galaxy.addColorStop(0.35, 'rgba(80, 160, 255, 0.16)');
+            galaxy.addColorStop(1, 'transparent');
+            this.ctx.fillStyle = galaxy;
+            this.ctx.fillRect(galaxyX - 260, galaxyY - 260, 520, 520);
+
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+            for (let ring = 0; ring < 5; ring++) {
+                const radius = 80 + ring * 30;
+                this.ctx.beginPath();
+                this.ctx.arc(galaxyX, galaxyY, radius, time / 500 + ring * 0.4, time / 500 + ring * 0.4 + Math.PI * 1.8);
+                this.ctx.stroke();
+            }
+        } else if (minuteLevel >= 2) {
+            const flareX = this.width * 0.25;
+            const flareY = this.height * 0.2;
+            const flare = this.ctx.createRadialGradient(flareX, flareY, 0, flareX, flareY, 180);
+            flare.addColorStop(0, 'rgba(0, 255, 200, 0.18)');
+            flare.addColorStop(0.45, 'rgba(0, 120, 255, 0.08)');
+            flare.addColorStop(1, 'transparent');
+            this.ctx.fillStyle = flare;
+            this.ctx.fillRect(flareX - 200, flareY - 200, 400, 400);
+        }
+    }
+
+    drawGrid() {
+        this.ctx.strokeStyle = 'rgba(0, 200, 255, 0.03)';
+        this.ctx.lineWidth = 1;
+        for (let x = 0; x < this.width; x += 50) {
+            this.ctx.beginPath(); this.ctx.moveTo(x, 0); this.ctx.lineTo(x, this.height); this.ctx.stroke();
+        }
+        for (let y = this.gridOffset; y < this.height; y += 50) {
+            this.ctx.beginPath(); this.ctx.moveTo(0, y); this.ctx.lineTo(this.width, y); this.ctx.stroke();
+        }
+    }
+
+    drawHUD() {
+        // คะแนน
+        this.ctx.textAlign = 'left';
+        this.ctx.fillStyle = '#00e5ff'; this.ctx.shadowBlur = 12; this.ctx.shadowColor = '#00e5ff';
+        this.ctx.font = 'bold 24px "Courier New", monospace';
+        this.ctx.fillText(`SCORE: ${this.score}`, 20, 38); this.ctx.shadowBlur = 0;
+        this.ctx.fillStyle = '#ffaa00'; this.ctx.font = '14px "Courier New", monospace';
+        this.ctx.fillText(`HI: ${this.highScore}`, 20, 58);
+
+        // เลเวล + XP
+        this.ctx.fillStyle = '#ffdd00'; this.ctx.font = 'bold 18px "Courier New", monospace';
+        this.ctx.fillText(`Lv.${this.player.level}`, 20, 82);
+        const xpBarW = 180, xpBarH = 10, xpBarX = 20, xpBarY = 90;
+        const xpPct = this.player.xp / this.player.xpToNext;
+        this.ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        this.ctx.fillRect(xpBarX, xpBarY, xpBarW, xpBarH);
+        this.ctx.fillStyle = '#ffdd00'; this.ctx.shadowBlur = 8; this.ctx.shadowColor = '#ffdd00';
+        this.ctx.fillRect(xpBarX, xpBarY, xpBarW * xpPct, xpBarH); this.ctx.shadowBlur = 0;
+        this.ctx.strokeStyle = 'rgba(255,255,255,0.2)'; this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(xpBarX, xpBarY, xpBarW, xpBarH);
+
+        // เวลา (นับถอยหลัง 15 นาที)
+        const remaining = Math.max(0, this.gameDuration - this.gameTimer);
+        const mins = Math.floor(remaining / 60);
+        const secs = remaining % 60;
+        const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+        this.ctx.textAlign = 'center';
+        this.ctx.fillStyle = remaining < 60 ? '#ff3333' : '#ffffff';
+        this.ctx.font = 'bold 20px "Courier New", monospace';
+        this.ctx.fillText(`⏱️ ${timeStr}`, this.width / 2, 35);
+
+        // HP Bar
+        const barW = 220, barH = 20, barX = this.width - barW - 20, barY = 25;
+        const hpPct = this.player.hp / this.player.maxHp;
+        this.ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        this.ctx.fillRect(barX, barY, barW, barH);
+        let hpColor = '#00ff66';
+        if (hpPct < 0.3) hpColor = '#ff3333'; else if (hpPct < 0.6) hpColor = '#ffcc00';
+        this.ctx.fillStyle = hpColor; this.ctx.shadowBlur = 15; this.ctx.shadowColor = hpColor;
+        this.ctx.fillRect(barX, barY, barW * hpPct, barH); this.ctx.shadowBlur = 0;
+        this.ctx.strokeStyle = 'rgba(255,255,255,0.4)'; this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(barX, barY, barW, barH);
+        this.ctx.fillStyle = '#fff'; this.ctx.font = 'bold 13px "Segoe UI", sans-serif';
+        this.ctx.fillText('HP', barX - 18, barY + 15);
+
+        // เกราะ
+        if (this.player.shieldMax > 0) {
+            this.ctx.fillStyle = '#00ccff'; this.ctx.font = 'bold 14px "Courier New", monospace';
+            this.ctx.textAlign = 'right';
+            this.ctx.fillText(`🛡️ ${this.player.shield}/${this.player.shieldMax}`, this.width - 20, 58);
+        }
+
+        // พลังแฝงด้านล่าง
+        this.ctx.textAlign = 'left';
+        let px = 20; const py = this.height - 28;
+        for (const p of this.player.powers.values()) {
+            p.drawIcon(this.ctx, px + 12, py - 6, 20);
+            this.ctx.fillStyle = '#ffffff'; this.ctx.font = 'bold 13px "Segoe UI", sans-serif';
+            this.ctx.fillText(`${p.name} Lv.${p.level}`, px + 36, py);
+            px += 150;
+        }
+
+        // ความยาก
+        this.ctx.fillStyle = 'rgba(255,255,255,0.3)'; this.ctx.font = '12px monospace';
+        this.ctx.textAlign = 'right';
+        this.ctx.fillText(`DIFF x${this.difficulty.toFixed(1)}`, this.width - 20, this.height - 10);
+    }
+
+    drawBossBar() {
+        if (!this.boss || this.boss.phase === 'enter' || this.boss.phase === 'dead') return;
+        const barW = 500, barH = 22;
+        const barX = (this.width - barW) / 2;
+        const barY = 55;
+        const hpPct = this.boss.hp / this.boss.maxHp;
+
+        // ชื่อบอส
+        this.ctx.textAlign = 'center';
+        this.ctx.fillStyle = '#ff4444';
+        this.ctx.font = 'bold 16px "Courier New", monospace';
+        this.ctx.fillText(`⚠ BOSS TIER ${this.boss.tier} ⚠`, this.width / 2, barY - 8);
+
+        // พื้นหลัง
+        this.ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        this.ctx.fillRect(barX - 4, barY - 4, barW + 8, barH + 8);
+        this.ctx.fillStyle = 'rgba(255,50,50,0.15)';
+        this.ctx.fillRect(barX, barY, barW, barH);
+
+        // หลอดเลือด
+        this.ctx.fillStyle = '#ff2222';
+        this.ctx.shadowBlur = 20; this.ctx.shadowColor = '#ff0000';
+        this.ctx.fillRect(barX, barY, barW * hpPct, barH);
+        this.ctx.shadowBlur = 0;
+
+        // ขอบ
+        this.ctx.strokeStyle = '#ff6666';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(barX, barY, barW, barH);
+
+        // ตัวเลข HP
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = 'bold 13px "Segoe UI", sans-serif';
+        this.ctx.fillText(`${this.boss.hp} / ${this.boss.maxHp}`, this.width / 2, barY + 16);
+    }
+
+    drawBossWarning() {
+        const alpha = Math.min(1, this.warningTimer / 60);
+        this.ctx.fillStyle = `rgba(255, 0, 0, ${alpha * 0.3})`;
+        this.ctx.fillRect(0, 0, this.width, this.height);
+        this.ctx.textAlign = 'center';
+        this.ctx.fillStyle = `rgba(255, 50, 50, ${alpha})`;
+        this.ctx.shadowBlur = 30; this.ctx.shadowColor = '#ff0000';
+        this.ctx.font = 'bold 56px "Courier New", monospace';
+        this.ctx.fillText('⚠ WARNING ⚠', this.width / 2, this.height / 2 - 20);
+        this.ctx.font = 'bold 32px "Courier New", monospace';
+        this.ctx.fillText(`BOSS APPROACHING - TIER ${this.boss ? this.boss.tier : 1}`, this.width / 2, this.height / 2 + 30);
+        this.ctx.shadowBlur = 0;
+    }
+
+    drawUpgradeScreen(time) {
+        this.ctx.fillStyle = 'rgba(0, 0, 8, 0.9)';
+        this.ctx.fillRect(0, 0, this.width, this.height);
+        this.ctx.textAlign = 'center';
+        this.ctx.fillStyle = '#ffdd00'; this.ctx.shadowBlur = 35; this.ctx.shadowColor = '#ffdd00';
+        this.ctx.font = 'bold 52px "Courier New", monospace';
+        this.ctx.fillText('LEVEL UP!', this.width / 2, 130); this.ctx.shadowBlur = 0;
+        this.ctx.fillStyle = '#ffffff'; this.ctx.font = '20px "Segoe UI", sans-serif';
+        this.ctx.fillText(`เลเวล ${this.player.level} - เลือกพลังแฝง (◄ ► + SPACE)`, this.width / 2, 175);
+
+        const cardW = 260, cardH = 340, gap = 30;
+        const startX = (this.width - (cardW * 3 + gap * 2)) / 2;
+        const cardY = 210;
+        for (let i = 0; i < 3; i++) {
+            const opt = this.upgradeOptions[i];
+            if (!opt) continue;
+            const p = opt.power;
+            const x = startX + i * (cardW + gap);
+            const isSelected = i === this.upgradeSelection;
+            this.ctx.fillStyle = isSelected ? 'rgba(0, 30, 50, 0.95)' : 'rgba(8, 8, 20, 0.92)';
+            this.ctx.strokeStyle = isSelected ? p.color : 'rgba(255,255,255,0.15)';
+            this.ctx.lineWidth = isSelected ? 4 : 2;
+            this.ctx.shadowBlur = isSelected ? 30 : 0; this.ctx.shadowColor = p.color;
+            this.drawRoundRect(x, cardY, cardW, cardH, 14);
+            this.ctx.fill(); this.ctx.stroke(); this.ctx.shadowBlur = 0;
+
+            this.ctx.fillStyle = p.color; this.ctx.font = 'bold 72px "Segoe UI", sans-serif';
+            this.ctx.textAlign = 'center';
+            p.drawIcon(this.ctx, x + cardW / 2, cardY + 90, 42);
+            this.ctx.fillStyle = '#ffffff'; this.ctx.font = 'bold 24px "Segoe UI", sans-serif';
+            this.ctx.fillText(p.name, x + cardW / 2, cardY + 150);
+            if (opt.isNew && p.level === 0) {
+                this.ctx.fillStyle = '#00ff66'; this.ctx.font = 'bold 15px "Segoe UI", sans-serif';
+                this.ctx.fillText('[ พลังใหม่ ]', x + cardW / 2, cardY + 180);
+            } else {
+                this.ctx.fillStyle = '#ffaa33'; this.ctx.font = 'bold 15px "Segoe UI", sans-serif';
+                this.ctx.fillText(`[ อัพเกรด Lv.${p.level} → Lv.${p.level + 1} ]`, x + cardW / 2, cardY + 180);
+            }
+            this.ctx.fillStyle = '#aabbcc'; this.ctx.font = '16px "Segoe UI", sans-serif';
+            this.wrapText(p.getLevelDescription(), x + cardW / 2, cardY + 220, cardW - 40, 24);
+
+            const dotY = cardY + cardH - 45, dotR = 7, dotGap = 20;
+            const totalW = (p.maxLevel - 1) * dotGap;
+            const dotStartX = x + (cardW - totalW) / 2;
+            for (let lv = 1; lv <= p.maxLevel; lv++) {
+                const dotX = dotStartX + (lv - 1) * dotGap;
+                this.ctx.beginPath(); this.ctx.arc(dotX, dotY, dotR, 0, Math.PI * 2);
+                if (lv <= p.level) { this.ctx.fillStyle = p.color; this.ctx.shadowBlur = 8; this.ctx.shadowColor = p.color; }
+                else if (lv === p.level + 1 && isSelected) { this.ctx.fillStyle = '#fff'; this.ctx.shadowBlur = 5; this.ctx.shadowColor = '#fff'; }
+                else { this.ctx.fillStyle = 'rgba(255,255,255,0.12)'; this.ctx.shadowBlur = 0; }
+                this.ctx.fill(); this.ctx.shadowBlur = 0;
+            }
+            if (isSelected) {
+                this.ctx.fillStyle = '#ffffff'; this.ctx.font = 'bold 17px "Segoe UI", sans-serif';
+                if (Math.sin(time / 180) > 0) this.ctx.fillText('▲ กด SPACE เพื่อเลือก ▲', x + cardW / 2, cardY + cardH - 15);
+            }
+        }
+    }
+
+    drawRoundRect(x, y, w, h, r) {
+        this.ctx.beginPath();
+        this.ctx.moveTo(x + r, y);
+        this.ctx.lineTo(x + w - r, y);
+        this.ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        this.ctx.lineTo(x + w, y + h - r);
+        this.ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        this.ctx.lineTo(x + r, y + h);
+        this.ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        this.ctx.lineTo(x, y + r);
+        this.ctx.quadraticCurveTo(x, y, x + r, y);
+        this.ctx.closePath();
+    }
+
+    wrapText(text, x, y, maxWidth, lineHeight) {
+        this.ctx.textAlign = 'center';
+        const words = text.split(' ');
+        let line = '', lineY = y;
+        for (let n = 0; n < words.length; n++) {
+            const testLine = line + words[n] + ' ';
+            const metrics = this.ctx.measureText(testLine);
+            if (metrics.width > maxWidth && n > 0) {
+                this.ctx.fillText(line, x, lineY);
+                line = words[n] + ' '; lineY += lineHeight;
+            } else { line = testLine; }
+        }
+        this.ctx.fillText(line, x, lineY);
+    }
+
+    drawMenu(time) {
+        // Dynamic neon cosmos background
+        const inner = this.ctx.createRadialGradient(this.width / 2, this.height * 0.25, 20, this.width / 2, this.height * 0.25, this.width * 0.9);
+        inner.addColorStop(0, '#0ffdff');
+        inner.addColorStop(0.12, 'rgba(0, 255, 255, 0.12)');
+        inner.addColorStop(0.25, 'rgba(10, 10, 35, 0.3)');
+        inner.addColorStop(1, '#02020b');
+        this.ctx.fillStyle = inner;
+        this.ctx.fillRect(0, 0, this.width, this.height);
+
+        // Pulsing gases and galaxy core
+        const pulse = Math.sin(time / 800) * 0.5 + 0.5;
+        const core = this.ctx.createRadialGradient(this.width / 2, this.height * 0.28, 10, this.width / 2, this.height * 0.28, 220);
+        core.addColorStop(0, `rgba(255, 110, 240, ${0.35 + pulse * 0.2})`);
+        core.addColorStop(0.35, 'rgba(0, 200, 255, 0.18)');
+        core.addColorStop(0.7, 'transparent');
+        this.ctx.fillStyle = core;
+        this.ctx.fillRect(0, 0, this.width, this.height);
+
+        // Background starfield accent
+        this.starsBack.forEach(s => s.draw(this.ctx, time));
+        this.nebulas.forEach(s => s.draw(this.ctx, time));
+
+        // Animated event lines
+        for (let i = 0; i < 6; i++) {
+            const y = this.height * 0.72 + Math.sin(time / 120 + i) * 10 + i * 6;
+            this.ctx.strokeStyle = `rgba(255, 255, 255, ${0.05 + i * 0.02})`;
+            this.ctx.lineWidth = 1.2;
+            this.ctx.beginPath();
+            this.ctx.moveTo(80, y);
+            this.ctx.quadraticCurveTo(this.width / 2, y + Math.sin(time / 200 + i) * 40, this.width - 80, y);
+            this.ctx.stroke();
+        }
+
+        this.ctx.textAlign = 'center';
+        this.ctx.shadowBlur = 40;
+        this.ctx.fillStyle = '#00fae0';
+        this.ctx.shadowColor = '#00fae0';
+        this.ctx.font = 'bold 76px "Courier New", monospace';
+        this.ctx.fillText('NEON SPACE', this.width / 2, this.height / 2 - 120);
+
+        this.ctx.fillStyle = '#ff55ff';
+        this.ctx.shadowColor = '#ff55ff';
+        this.ctx.font = 'bold 62px "Courier New", monospace';
+        this.ctx.fillText('SHOOTER', this.width / 2, this.height / 2 - 40);
+        this.ctx.shadowBlur = 0;
+
+        const glowText = `FINAL COSMIC ASSAULT`;
+        this.ctx.fillStyle = '#ffcc33';
+        this.ctx.font = 'bold 22px "Segoe UI", sans-serif';
+        this.ctx.fillText(glowText, this.width / 2, this.height / 2 + 20);
+
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = '20px "Segoe UI", sans-serif';
+        if (Math.sin(time / 250) > 0) this.ctx.fillText('กด [ SPACEBAR ] เพื่อเริ่มเกม', this.width / 2, this.height / 2 + 90);
+    }
+
+    drawGameOver(time) {
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        this.ctx.fillRect(0, 0, this.width, this.height);
+        this.ctx.textAlign = 'center'; this.ctx.shadowBlur = 30;
+        this.ctx.fillStyle = '#ff3366'; this.ctx.shadowColor = '#ff3366';
+        this.ctx.font = 'bold 76px "Courier New", monospace';
+        this.ctx.fillText('GAME OVER', this.width / 2, this.height / 2 - 50); this.ctx.shadowBlur = 0;
+        this.ctx.fillStyle = '#ffffff'; this.ctx.font = '26px "Segoe UI", sans-serif';
+        this.ctx.fillText(`คะแนน: ${this.score}  |  เลเวล: ${this.player ? this.player.level : 1}  |  เวลา: ${this.gameTimer}s`, this.width / 2, this.height / 2 + 15);
+        const isNewHigh = this.score >= this.highScore && this.score > 0;
+        this.ctx.fillStyle = isNewHigh ? '#ffdd00' : '#8899aa'; this.ctx.font = '22px "Segoe UI", sans-serif';
+        this.ctx.fillText(isNewHigh ? `🏆 สถิติใหม่: ${this.highScore} 🏆` : `สูงสุด: ${this.highScore}`, this.width / 2, this.height / 2 + 55);
+        this.ctx.fillStyle = '#00ffff'; this.ctx.font = '20px "Segoe UI", sans-serif';
+        if (Math.sin(time / 250) > 0) this.ctx.fillText('กด [ SPACEBAR ] เพื่อเล่นใหม่', this.width / 2, this.height / 2 + 115);
+    }
+
+    drawVictory(time) {
+        this.ctx.fillStyle = 'rgba(0, 10, 30, 0.6)';
+        this.ctx.fillRect(0, 0, this.width, this.height);
+        this.ctx.textAlign = 'center'; this.ctx.shadowBlur = 40;
+        this.ctx.fillStyle = '#ffdd00'; this.ctx.shadowColor = '#ffdd00';
+        this.ctx.font = 'bold 72px "Courier New", monospace';
+        this.ctx.fillText('VICTORY!', this.width / 2, this.height / 2 - 60); this.ctx.shadowBlur = 0;
+        this.ctx.fillStyle = '#00ff88'; this.ctx.font = '28px "Segoe UI", sans-serif';
+        this.ctx.fillText('คุณเอาชีวิตรอดครบ 15 นาที!', this.width / 2, this.height / 2 + 5);
+        this.ctx.fillStyle = '#ffffff'; this.ctx.font = '24px "Segoe UI", sans-serif';
+        this.ctx.fillText(`คะแนน: ${this.score}  |  เลเวลสูงสุด: ${this.player ? this.player.level : 1}`, this.width / 2, this.height / 2 + 45);
+        const isNewHigh = this.score >= this.highScore && this.score > 0;
+        this.ctx.fillStyle = isNewHigh ? '#ffdd00' : '#8899aa'; this.ctx.font = '22px "Segoe UI", sans-serif';
+        this.ctx.fillText(isNewHigh ? `🏆 สถิติใหม่: ${this.highScore} 🏆` : `สูงสุด: ${this.highScore}`, this.width / 2, this.height / 2 + 85);
+        this.ctx.fillStyle = '#00ffff'; this.ctx.font = '20px "Segoe UI", sans-serif';
+        if (Math.sin(time / 250) > 0) this.ctx.fillText('กด [ SPACEBAR ] เพื่อเล่นใหม่', this.width / 2, this.height / 2 + 145);
+    }
+
+    loop() {
+        this.update();
+        this.draw();
+        requestAnimationFrame(this.loop);
+    }
+}
+
+window.onload = () => { new Game(); };
+    </script>
+</body>
+</html>
