@@ -6,6 +6,7 @@
     <title>Neon Space Shooter - Final Edition</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             background: #000;
             display: flex;
@@ -22,14 +23,63 @@
             border: 2px solid rgba(0, 255, 255, 0.4);
             border-radius: 8px;
             overflow: hidden;
+            touch-action: none;
         }
-        canvas { display: block; background: #000011; }
+        canvas { display: block; background: #000011; width: min(100vw, 960px); height: auto; max-height: 100vh; touch-action: none; }
+        .touch-controls {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+        }
+        .touch-button {
+            position: absolute;
+            width: 72px;
+            height: 72px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.35);
+            background: rgba(8, 18, 30, 0.42);
+            color: #fff;
+            font: bold 18px 'Segoe UI', sans-serif;
+            box-shadow: inset 0 0 16px rgba(0,255,255,0.15), 0 0 18px rgba(0,255,255,0.15);
+            pointer-events: auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+            backdrop-filter: blur(2px);
+        }
+        .touch-button:active, .touch-button.active {
+            background: rgba(0, 220, 255, 0.45);
+            transform: scale(0.98);
+        }
+        .touch-button.up { left: 70px; bottom: 138px; }
+        .touch-button.down { left: 70px; bottom: 44px; }
+        .touch-button.left { left: 12px; bottom: 90px; }
+        .touch-button.right { left: 128px; bottom: 90px; }
+        .touch-button.shoot { right: 30px; bottom: 70px; width: 96px; height: 96px; border-radius: 50%; background: rgba(255, 90, 90, 0.38); }
+        @media (max-width: 768px) {
+            .touch-button { width: 62px; height: 62px; font-size: 16px; }
+            .touch-button.up { left: 48px; bottom: 120px; }
+            .touch-button.down { left: 48px; bottom: 30px; }
+            .touch-button.left { left: 8px; bottom: 74px; }
+            .touch-button.right { left: 96px; bottom: 74px; }
+            .touch-button.shoot { right: 18px; bottom: 52px; width: 84px; height: 84px; }
+        }
     </style>
 <base target="_blank">
 </head>
 <body>
     <div id="game-container">
         <canvas id="gameCanvas" width="960" height="800"></canvas>
+        <div class="touch-controls" aria-hidden="true">
+            <div class="touch-button left" data-control="left">◀</div>
+            <div class="touch-button right" data-control="right">▶</div>
+            <div class="touch-button up" data-control="up">▲</div>
+            <div class="touch-button down" data-control="down">▼</div>
+            <div class="touch-button shoot" data-control="shoot">FIRE</div>
+        </div>
     </div>
     <script>
 const canvas = document.getElementById('gameCanvas');
@@ -1592,6 +1642,53 @@ class Game {
     }
 
     bindInput() {
+        const setTouchState = (control, pressed) => {
+            const keyMap = { left: 'left', right: 'right', up: 'up', down: 'down', shoot: 'shoot' };
+            const key = keyMap[control];
+            if (!key) return;
+            this.input[key] = pressed;
+            const button = document.querySelector(`.touch-button[data-control="${control}"]`);
+            if (button) button.classList.toggle('active', pressed);
+        };
+
+        const handlePointerForControl = (control, pressed) => {
+            if (this.state === 'MENU' && !pressed) return;
+            setTouchState(control, pressed);
+            if (pressed && (this.state === 'MENU' || this.state === 'GAMEOVER' || this.state === 'VICTORY')) {
+                if (control === 'shoot' || control === 'left' || control === 'right' || control === 'up' || control === 'down') {
+                    this.startGame();
+                }
+            }
+        };
+
+        document.querySelectorAll('.touch-button').forEach((button) => {
+            const control = button.dataset.control;
+            button.addEventListener('pointerdown', (e) => {
+                e.preventDefault();
+                handlePointerForControl(control, true);
+            });
+            button.addEventListener('pointerup', (e) => {
+                e.preventDefault();
+                handlePointerForControl(control, false);
+            });
+            button.addEventListener('pointerleave', (e) => {
+                e.preventDefault();
+                handlePointerForControl(control, false);
+            });
+            button.addEventListener('pointercancel', (e) => {
+                e.preventDefault();
+                handlePointerForControl(control, false);
+            });
+        });
+
+        const container = document.getElementById('game-container');
+        container.addEventListener('pointerdown', (e) => {
+            if (e.target.closest('.touch-button')) return;
+            if (this.state === 'MENU' || this.state === 'GAMEOVER' || this.state === 'VICTORY') {
+                this.startGame();
+            }
+        });
+
         window.addEventListener('keydown', (e) => {
             if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
             if (this.state === 'MENU' && !this.audio.isPlaying) {
@@ -2378,7 +2475,7 @@ class Game {
 
         this.ctx.fillStyle = '#ffcc33';
         this.ctx.font = 'bold 18px "Segoe UI", sans-serif';
-        this.ctx.fillText('PRESS SPACE', this.width / 2, this.height / 2 + 70);
+        this.ctx.fillText('PRESS SPACE / TAP TO START', this.width / 2, this.height / 2 + 70);
     }
 
     drawGameOver(time) {
@@ -2394,7 +2491,7 @@ class Game {
         this.ctx.fillStyle = isNewHigh ? '#ffdd00' : '#8899aa'; this.ctx.font = '22px "Segoe UI", sans-serif';
         this.ctx.fillText(isNewHigh ? `🏆 สถิติใหม่: ${this.highScore} 🏆` : `สูงสุด: ${this.highScore}`, this.width / 2, this.height / 2 + 55);
         this.ctx.fillStyle = '#00ffff'; this.ctx.font = '20px "Segoe UI", sans-serif';
-        if (Math.sin(time / 250) > 0) this.ctx.fillText('กด [ SPACEBAR ] เพื่อเล่นใหม่', this.width / 2, this.height / 2 + 115);
+        if (Math.sin(time / 250) > 0) this.ctx.fillText('กด [ SPACEBAR ] หรือแตะหน้าจอเพื่อเล่นใหม่', this.width / 2, this.height / 2 + 115);
     }
 
     drawVictory(time) {
@@ -2412,7 +2509,7 @@ class Game {
         this.ctx.fillStyle = isNewHigh ? '#ffdd00' : '#8899aa'; this.ctx.font = '22px "Segoe UI", sans-serif';
         this.ctx.fillText(isNewHigh ? `🏆 สถิติใหม่: ${this.highScore} 🏆` : `สูงสุด: ${this.highScore}`, this.width / 2, this.height / 2 + 85);
         this.ctx.fillStyle = '#00ffff'; this.ctx.font = '20px "Segoe UI", sans-serif';
-        if (Math.sin(time / 250) > 0) this.ctx.fillText('กด [ SPACEBAR ] เพื่อเล่นใหม่', this.width / 2, this.height / 2 + 145);
+        if (Math.sin(time / 250) > 0) this.ctx.fillText('กด [ SPACEBAR ] หรือแตะหน้าจอเพื่อเล่นใหม่', this.width / 2, this.height / 2 + 145);
     }
 
     loop() {
